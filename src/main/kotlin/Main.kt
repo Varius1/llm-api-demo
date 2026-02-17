@@ -94,16 +94,21 @@ fun main() {
 
     println("=== LLM CLI Chat ===")
     println("Модель: $model")
-    println("Введите сообщение (или 'exit' для выхода)")
+    println("Введите сообщение (пустая строка — отправить, 'exit' — выход)")
     println()
 
-    val history = mutableListOf(
-        ChatMessage(role = "system", content = "Ты полезный ассистент. Отвечай кратко и по делу.")
-    )
+    val history = mutableListOf<ChatMessage>()
 
     while (true) {
         print("Вы: ")
-        val input = readlnOrNull()?.trim() ?: break
+        val lines = mutableListOf<String>()
+        while (true) {
+            val line = readlnOrNull() ?: break
+            if (line.isEmpty()) break
+            lines.add(line)
+        }
+
+        val input = lines.joinToString("\n").trim()
 
         if (input.equals("exit", ignoreCase = true) || input.equals("quit", ignoreCase = true)) {
             println("До свидания!")
@@ -116,7 +121,7 @@ fun main() {
 
         try {
             val reply = sendMessage(apiKey, history, model)
-            println("\nLLM: $reply\n")
+            println("\nLLM:\n$reply\n")
             history.add(ChatMessage(role = "assistant", content = reply))
         } catch (e: Exception) {
             println("\nОшибка: ${e.message}\n")
