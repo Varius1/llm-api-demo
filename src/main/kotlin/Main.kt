@@ -42,7 +42,7 @@ data class ChatError(
 // --- Конфигурация ---
 
 private const val OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-private const val DEFAULT_MODEL = "openai/gpt-3.5-turbo"
+private const val DEFAULT_MODEL = "openai/gpt-4.1-mini"
 
 private val json = Json { ignoreUnknownKeys = true }
 
@@ -97,8 +97,6 @@ fun main() {
     println("Введите сообщение (пустая строка — отправить, 'exit' — выход)")
     println()
 
-    val history = mutableListOf<ChatMessage>()
-
     while (true) {
         print("Вы: ")
         val lines = mutableListOf<String>()
@@ -117,12 +115,11 @@ fun main() {
 
         if (input.isEmpty()) continue
 
-        history.add(ChatMessage(role = "user", content = input))
+        val messages = listOf(ChatMessage(role = "user", content = input))
 
         try {
-            val reply = sendMessage(apiKey, history, model)
+            val reply = sendMessage(apiKey, messages, model)
             println("\nLLM:\n$reply\n")
-            history.add(ChatMessage(role = "assistant", content = reply))
         } catch (e: Exception) {
             println("\nОшибка: ${e.message}\n")
         }
