@@ -20,6 +20,7 @@ data class ChatMessage(
 data class ChatRequest(
     val model: String,
     val messages: List<ChatMessage>,
+    val temperature: Double? = null,
 )
 
 @Serializable
@@ -42,9 +43,12 @@ data class ChatError(
 // --- Конфигурация ---
 
 private const val OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-private const val DEFAULT_MODEL = "openai/gpt-4.1-mini"
+private const val DEFAULT_MODEL = "deepseek/deepseek-chat-v3.1"
 
-private val json = Json { ignoreUnknownKeys = true }
+private val json = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = false
+}
 
 private val client = OkHttpClient.Builder()
     .connectTimeout(30, TimeUnit.SECONDS)
@@ -53,9 +57,9 @@ private val client = OkHttpClient.Builder()
 
 // --- Основная логика ---
 
-fun sendMessage(apiKey: String, messages: List<ChatMessage>, model: String): String {
+fun sendMessage(apiKey: String, messages: List<ChatMessage>, model: String, temperature: Double?): String {
     val requestBody = json.encodeToString(
-        ChatRequest(model = model, messages = messages)
+        ChatRequest(model = model, messages = messages, temperature = temperature)
     )
 
     val request = Request.Builder()
@@ -91,34 +95,52 @@ fun main() {
         }
 
     val model = System.getenv("LLM_MODEL") ?: DEFAULT_MODEL
+    var temperature = System.getenv("LLM_TEMPERATURE")?.toDoubleOrNull()
 
     println("=== LLM CLI Chat ===")
     println("Модель: $model")
-    println("Введите сообщение (пустая строка — отправить, 'exit' — выход)")
+    println("Температура: ${temperature ?: "по умолчанию (1.0)"}")
+    println("Команды: /temp 0.7 — температура, exit — выход")
+    println("Введите сообщение (двойной Enter — отправить)")
     println()
 
     while (true) {
         print("Вы: ")
         val lines = mutableListOf<String>()
+        var emptyCount = 0
         while (true) {
             val line = readlnOrNull() ?: break
-            if (line.isEmpty()) break
-            lines.add(line)
+            if (line.isEmpty()) {
+                emptyCount++
+                if (emptyCount >= 2) break
+                lines.add(line)
+            } else {
+                emptyCount = 0
+                val trimmed = line.trim()
+                if (lines.isEmpty() && trimmed.startsWith("/temp")) {
+                    val newTemp = trimmed.removePrefix("/temp").trim().toDoubleOrNull()
+                    temperature = newTemp
+                    println("Температура: ${temperature ?: "по умолчанию (1.0)"}\n")
+                    emptyCount = 2
+                    break
+                }
+                if (lines.isEmpty() && (trimmed.equals("exit", ignoreCase = true) || trimmed.equals("quit", ignoreCase = true))) {
+                    println("До свидания!")
+                    return
+                }
+                lines.add(line)
+            }
         }
 
         val input = lines.joinToString("\n").trim()
-
-        if (input.equals("exit", ignoreCase = true) || input.equals("quit", ignoreCase = true)) {
-            println("До свидания!")
-            break
-        }
 
         if (input.isEmpty()) continue
 
         val messages = listOf(ChatMessage(role = "user", content = input))
 
         try {
-            val reply = sendMessage(apiKey, messages, model)
+            println("[DEBUG] temperature = $temperature")
+            val reply = sendMessage(apiKey, messages, model, temperature)
             println("\nLLM:\n$reply\n")
         } catch (e: Exception) {
             println("\nОшибка: ${e.message}\n")
