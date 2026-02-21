@@ -1,7 +1,16 @@
-# Gradle
-.gradle/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
 build/
-gradle/wrapper/gradle-wrapper.jar
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
 
 # IDE
 .idea/
