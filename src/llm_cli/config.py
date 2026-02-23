@@ -127,10 +127,19 @@ def ensure_config() -> AppConfig:
 
     cfg.api_key = api_key
 
+    console.print(
+        f"[dim]Модель по умолчанию — ID из OpenRouter, например: {cfg.default_model}[/dim]"
+    )
     default_model = Prompt.ask(
         "Модель по умолчанию",
         default=cfg.default_model,
     )
+    if "/" not in default_model:
+        console.print(
+            f"[yellow]'{default_model}' не похоже на ID модели (ожидается формат provider/model-name). "
+            f"Используется: {cfg.default_model}[/yellow]"
+        )
+        default_model = cfg.default_model
     cfg.default_model = default_model
 
     cfg.save()

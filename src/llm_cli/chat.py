@@ -3,23 +3,26 @@
 from __future__ import annotations
 
 from rich.console import Console
-from rich.prompt import Prompt
 
+from .agent import Agent
 from .api import OpenRouterClient
 from .benchmark import run_benchmark
 from .config import AppConfig
 from .display import print_error, print_llm_response, print_welcome
-from .models import BENCHMARK_PROMPT, ChatMessage
+from .models import BENCHMARK_PROMPT
 
 console = Console()
 
 
 def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
-    model = cfg.default_model
-    temperature: float | None = cfg.temperature
+    agent = Agent(
+        client=client,
+        model=cfg.default_model,
+        temperature=cfg.temperature,
+    )
     benchmark_prompt = cfg.benchmark_prompt or BENCHMARK_PROMPT
 
-    print_welcome(model, temperature)
+    print_welcome(agent.model, agent.temperature)
 
     while True:
         try:
@@ -40,26 +43,26 @@ def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
             break
 
         if text.startswith("/temp"):
-            temperature = _handle_temp(text, temperature)
+            _handle_temp(text, agent)
+            continue
+
+        if text.startswith("/model"):
+            _handle_model(text, agent)
             continue
 
         if text == "/compare":
             console.print()
-            run_benchmark(client, benchmark_prompt, cfg.models, temperature)
+            run_benchmark(client, benchmark_prompt, cfg.models, agent.temperature)
             continue
 
-        if text.startswith("/model"):
-            model = _handle_model(text, model)
+        if text == "/clear":
+            agent.clear_history()
+            console.print("[green]История очищена.[/green]\n")
             continue
-
-        messages = [ChatMessage(role="user", content=text)]
 
         try:
-            with console.status(
-                "[bold cyan]Думаю...[/bold cyan]",
-                spinner="dots",
-            ):
-                reply = client.send(messages, model, temperature)
+            with console.status("[bold cyan]Думаю...[/bold cyan]", spinner="dots"):
+                reply = agent.run(text)
             print_llm_response(reply)
         except Exception as e:
             print_error(str(e))
@@ -91,28 +94,26 @@ def _read_multiline_input() -> str | None:
     return "\n".join(lines).strip() or None
 
 
-def _handle_temp(text: str, current: float | None) -> float | None:
+def _handle_temp(text: str, agent: Agent) -> None:
     raw = text.removeprefix("/temp").strip()
     if not raw:
+        current = agent.temperature
         console.print(
             f"[dim]Текущая температура: {current if current is not None else 'по умолчанию (1.0)'}[/dim]"
         )
-        return current
+        return
     try:
         new_temp = float(raw)
-        console.print(f"[green]Температура: {new_temp}[/green]")
-        console.print()
-        return new_temp
+        agent.temperature = new_temp
+        console.print(f"[green]Температура: {new_temp}[/green]\n")
     except ValueError:
         print_error(f"Некорректное значение температуры: {raw}")
-        return current
 
 
-def _handle_model(text: str, current: str) -> str:
+def _handle_model(text: str, agent: Agent) -> None:
     raw = text.removeprefix("/model").strip()
     if not raw:
-        console.print(f"[dim]Текущая модель: {current}[/dim]")
-        return current
-    console.print(f"[green]Модель: {raw}[/green]")
-    console.print()
-    return raw
+        console.print(f"[dim]Текущая модель: {agent.model}[/dim]")
+        return
+    agent.model = raw
+    console.print(f"[green]Модель: {raw}[/green]\n")
