@@ -23,6 +23,11 @@ def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
     benchmark_prompt = cfg.benchmark_prompt or BENCHMARK_PROMPT
 
     print_welcome(agent.model, agent.temperature)
+    if agent.restored_messages_count > 0:
+        console.print(
+            f"[dim]Восстановлено сообщений из истории: {agent.restored_messages_count}[/dim]"
+        )
+        console.print()
 
     while True:
         try:

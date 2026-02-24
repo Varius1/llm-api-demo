@@ -20,3 +20,7 @@ env/
 # Environment / secrets
 .env
 local.properties
+
+# Legacy Android/Gradle artifacts
+.gradle/
+gradle/

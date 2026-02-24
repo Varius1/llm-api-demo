@@ -58,7 +58,7 @@ python -m llm_cli --compare --prompt "Что такое рекурсия?" --tem
 | `/temp 0.7` | Установить температуру генерации |
 | `/compare` | Запустить бенчмарк-сравнение моделей |
 | `/model deepseek/deepseek-chat-v3.1` | Сменить модель |
-| `/clear` | Очистить историю диалога |
+| `/clear` | Очистить историю диалога (в памяти и в файле истории) |
 | `exit` / `quit` | Выйти |
 
 Ввод сообщения: напишите текст и нажмите Enter дважды для отправки.
@@ -69,6 +69,13 @@ python -m llm_cli --compare --prompt "Что такое рекурсия?" --tem
 
 - **Linux/macOS:** `~/.config/llm-cli/config.toml`
 - **Windows:** `%APPDATA%\llm-cli\config.toml`
+
+История диалога сохраняется отдельно:
+
+- **Linux/macOS:** `~/.config/llm-cli/history.json`
+- **Windows:** `%APPDATA%\llm-cli\history.json`
+
+При новом запуске история автоматически загружается, и диалог продолжается с прошлого контекста.
 
 ```toml
 [general]
