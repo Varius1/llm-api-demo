@@ -57,8 +57,9 @@ python -m llm_cli --compare --prompt "Что такое рекурсия?" --tem
 |---|---|
 | `/temp 0.7` | Установить температуру генерации |
 | `/compare` | Запустить бенчмарк-сравнение моделей |
-| `/model deepseek/deepseek-chat-v3.1` | Сменить модель |
+| `/model google/gemma-2-9b-it` | Сменить модель |
 | `/clear` | Очистить историю диалога (в памяти и в файле истории) |
+| `/overflow 9000` | Отправить большой тестовый запрос в strict-режиме (`transforms: []`) |
 | `exit` / `quit` | Выйти |
 
 Ввод сообщения: напишите текст и нажмите Enter дважды для отправки.
@@ -80,7 +81,7 @@ python -m llm_cli --compare --prompt "Что такое рекурсия?" --tem
 ```toml
 [general]
 api_key = "sk-or-v1-..."
-default_model = "deepseek/deepseek-chat-v3.1"
+default_model = "google/gemma-2-9b-it"
 temperature = 1.0
 benchmark_prompt = ""
 
@@ -92,6 +93,33 @@ input_price_per_million = 0.1
 output_price_per_million = 0.32
 url = "https://openrouter.ai/meta-llama/llama-3.3-70b-instruct"
 ```
+
+## Токены и стоимость в чате
+
+После каждого ответа CLI показывает:
+
+- токены текущего запроса (оценка),
+- токены всей истории (`prompt`, по данным API),
+- токены ответа модели (`response`, по данным API),
+- итог токенов (`total`) и стоимость за ход/сессию.
+
+Это позволяет увидеть, как при длинном диалоге растут `prompt_tokens` и стоимость.
+
+## Демонстрация переполнения контекста
+
+Для задания можно воспроизвести реальное переполнение лимита модели:
+
+```bash
+python -m llm_cli
+```
+
+В чате:
+
+1. `/model google/gemma-2-9b-it` (контекст ~8192 токена)
+2. `/clear`
+3. `/overflow 9000` (команда отправляется в strict-режиме с `transforms: []`)
+
+Ожидаемое поведение: API вернёт `HTTP 400` с ошибкой переполнения контекста.
 
 ## Архитектура
 

@@ -7,7 +7,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from .models import BenchmarkResult, ModelConfig
+from .models import BenchmarkResult, ChatTurnStats, ModelConfig
 
 console = Console()
 
@@ -22,6 +22,7 @@ def print_welcome(model: str, temperature: float | None) -> None:
             "Команды: [yellow]/temp 0.7[/yellow] — температура, "
             "[yellow]/compare[/yellow] — сравнить модели, "
             "[yellow]/model <id>[/yellow] — сменить модель, "
+            "[yellow]/overflow 9000[/yellow] — тест переполнения контекста, "
             "[yellow]exit[/yellow] — выход\n"
             "Введите сообщение (двойной Enter — отправить)",
             title="[bold cyan]LLM CLI[/bold cyan]",
@@ -46,6 +47,39 @@ def print_llm_response(text: str) -> None:
 
 def print_error(message: str) -> None:
     console.print(f"[bold red]Ошибка:[/bold red] {message}")
+    console.print()
+
+
+def print_chat_turn_stats(stats: ChatTurnStats) -> None:
+    prompt = stats.prompt_tokens if stats.prompt_tokens is not None else "n/a"
+    completion = (
+        stats.completion_tokens if stats.completion_tokens is not None else "n/a"
+    )
+    total = stats.total_tokens if stats.total_tokens is not None else "n/a"
+    turn_cost = (
+        f"${stats.turn_cost_usd:.6f}" if stats.turn_cost_usd is not None else "n/a"
+    )
+
+    console.print(
+        "[bold]Токены:[/bold] "
+        f"запрос≈{stats.request_tokens_estimated}, "
+        f"история≈{stats.history_tokens_estimated}, "
+        f"prompt={prompt}, "
+        f"response={completion}, "
+        f"total={total}"
+    )
+    console.print(
+        "[bold]Стоимость:[/bold] "
+        f"за ход={turn_cost}, "
+        f"сессия=${stats.session_cost_usd:.6f}"
+    )
+    console.print(
+        "[dim]"
+        f"Накопительно: prompt={stats.session_prompt_tokens}, "
+        f"response={stats.session_completion_tokens}, "
+        f"total={stats.session_total_tokens}"
+        "[/dim]"
+    )
     console.print()
 
 

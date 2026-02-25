@@ -9,6 +9,7 @@ from .models import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
+    TokenUsage,
 )
 
 
@@ -30,8 +31,14 @@ class OpenRouterClient:
         messages: list[ChatMessage],
         model: str,
         temperature: float | None = None,
+        transforms: list[str] | None = None,
     ) -> ChatResponse:
-        request = ChatRequest(model=model, messages=messages, temperature=temperature)
+        request = ChatRequest(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            transforms=transforms,
+        )
         payload = request.model_dump(exclude_none=True)
 
         response = self._client.post(
@@ -53,8 +60,19 @@ class OpenRouterClient:
         messages: list[ChatMessage],
         model: str,
         temperature: float | None = None,
+        transforms: list[str] | None = None,
     ) -> str:
-        chat_response = self.send_raw(messages, model, temperature)
+        content, _ = self.send_with_usage(messages, model, temperature, transforms)
+        return content
+
+    def send_with_usage(
+        self,
+        messages: list[ChatMessage],
+        model: str,
+        temperature: float | None = None,
+        transforms: list[str] | None = None,
+    ) -> tuple[str, TokenUsage | None]:
+        chat_response = self.send_raw(messages, model, temperature, transforms)
 
         if chat_response.error is not None:
             raise RuntimeError(f"API ошибка: {chat_response.error.message}")
@@ -62,7 +80,7 @@ class OpenRouterClient:
         if not chat_response.choices:
             raise RuntimeError("Нет ответа в choices")
 
-        return chat_response.choices[0].message.content
+        return chat_response.choices[0].message.content, chat_response.usage
 
     def __enter__(self) -> OpenRouterClient:
         return self

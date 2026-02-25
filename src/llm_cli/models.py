@@ -14,12 +14,26 @@ class ChatRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
     temperature: float | None = None
+    transforms: list[str] | None = None
 
 
 class TokenUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+
+
+class ChatTurnStats(BaseModel):
+    request_tokens_estimated: int
+    history_tokens_estimated: int
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    turn_cost_usd: float | None = None
+    session_prompt_tokens: int = 0
+    session_completion_tokens: int = 0
+    session_total_tokens: int = 0
+    session_cost_usd: float = 0.0
 
 
 class ChatError(BaseModel):
@@ -69,7 +83,10 @@ class BenchmarkResult(BaseModel):
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-DEFAULT_MODEL = "deepseek/deepseek-chat-v3.1"
+DEFAULT_MODEL = "google/gemma-2-9b-it"
+
+DEFAULT_MODEL_INPUT_PRICE_PER_MILLION = 0.03
+DEFAULT_MODEL_OUTPUT_PRICE_PER_MILLION = 0.09
 
 BENCHMARK_MODELS = [
     ModelConfig(
@@ -111,3 +128,28 @@ JUDGE_MODEL = ModelConfig(
     output_price_per_million=2.50,
     url="https://openrouter.ai/google/gemini-2.5-flash",
 )
+
+
+def get_model_token_prices_per_million(model_id: str) -> tuple[float, float] | None:
+    if model_id == DEFAULT_MODEL:
+        return (DEFAULT_MODEL_INPUT_PRICE_PER_MILLION, DEFAULT_MODEL_OUTPUT_PRICE_PER_MILLION)
+
+    for model in BENCHMARK_MODELS:
+        if model.id == model_id:
+            return (model.input_price_per_million, model.output_price_per_million)
+
+    return None
+
+
+def calculate_usage_cost_usd(usage: TokenUsage | None, model_id: str) -> float | None:
+    if usage is None:
+        return None
+
+    prices = get_model_token_prices_per_million(model_id)
+    if prices is None:
+        return None
+
+    input_price, output_price = prices
+    input_cost = usage.prompt_tokens / 1_000_000 * input_price
+    output_cost = usage.completion_tokens / 1_000_000 * output_price
+    return input_cost + output_cost
