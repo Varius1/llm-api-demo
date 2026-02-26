@@ -14,6 +14,7 @@ from .models import BENCHMARK_MODELS, DEFAULT_MODEL, ModelConfig
 
 APP_NAME = "llm-cli"
 CONFIG_FILENAME = "config.toml"
+DEFAULT_TEMPERATURE = 0.2
 
 console = Console()
 
@@ -51,7 +52,7 @@ class AppConfig:
         self,
         api_key: str = "",
         default_model: str = DEFAULT_MODEL,
-        temperature: float = 1.0,
+        temperature: float = DEFAULT_TEMPERATURE,
         benchmark_prompt: str = "",
         models: list[ModelConfig] | None = None,
     ):
@@ -92,7 +93,7 @@ class AppConfig:
         return cls(
             api_key=general.get("api_key", ""),
             default_model=general.get("default_model", DEFAULT_MODEL),
-            temperature=general.get("temperature", 1.0),
+            temperature=general.get("temperature", DEFAULT_TEMPERATURE),
             benchmark_prompt=general.get("benchmark_prompt", ""),
             models=models if models else list(BENCHMARK_MODELS),
         )

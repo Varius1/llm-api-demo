@@ -26,14 +26,29 @@ class TokenUsage(BaseModel):
 class ChatTurnStats(BaseModel):
     request_tokens_estimated: int
     history_tokens_estimated: int
+    raw_history_tokens_estimated: int | None = None
+    sent_history_tokens_estimated: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
     turn_cost_usd: float | None = None
+    compression_enabled: bool = False
+    used_summary: bool = False
+    summary_chars: int = 0
+    compressed_messages_count: int = 0
     session_prompt_tokens: int = 0
     session_completion_tokens: int = 0
     session_total_tokens: int = 0
     session_cost_usd: float = 0.0
+
+
+class CompressionStatus(BaseModel):
+    enabled: bool
+    keep_last_n: int
+    summarize_every: int
+    min_messages_for_summary: int
+    summary_chars: int
+    compressed_messages_count: int
 
 
 class ChatError(BaseModel):

@@ -18,10 +18,12 @@ def print_welcome(model: str, temperature: float | None) -> None:
         Panel(
             "[bold]LLM CLI Chat[/bold]\n"
             f"Модель: [cyan]{model}[/cyan]\n"
-            f"Температура: [cyan]{temperature if temperature is not None else 'по умолчанию (1.0)'}[/cyan]\n\n"
+            f"Температура: [cyan]{temperature if temperature is not None else 'по умолчанию (0.2)'}[/cyan]\n\n"
             "Команды: [yellow]/temp 0.7[/yellow] — температура, "
             "[yellow]/compare[/yellow] — сравнить модели, "
+            "[yellow]/demo-compare[/yellow] — авто-сравнение off/on, "
             "[yellow]/model <id>[/yellow] — сменить модель, "
+            "[yellow]/compress on|off[/yellow] — сжатие контекста, "
             "[yellow]/overflow 9000[/yellow] — тест переполнения контекста, "
             "[yellow]exit[/yellow] — выход\n"
             "Введите сообщение (двойной Enter — отправить)",
@@ -68,6 +70,26 @@ def print_chat_turn_stats(stats: ChatTurnStats) -> None:
         f"response={completion}, "
         f"total={total}"
     )
+    if (
+        stats.raw_history_tokens_estimated is not None
+        and stats.sent_history_tokens_estimated is not None
+    ):
+        console.print(
+            "[dim]"
+            f"Контекст до/после сжатия: {stats.raw_history_tokens_estimated} -> "
+            f"{stats.sent_history_tokens_estimated} токенов (оценка)"
+            "[/dim]"
+        )
+    if stats.compression_enabled:
+        state = "использован" if stats.used_summary else "не использован"
+        console.print(
+            "[dim]"
+            f"Компрессия: on, summary {state}, summary_chars={stats.summary_chars}, "
+            f"сжато сообщений={stats.compressed_messages_count}"
+            "[/dim]"
+        )
+    else:
+        console.print("[dim]Компрессия: off[/dim]")
     console.print(
         "[bold]Стоимость:[/bold] "
         f"за ход={turn_cost}, "
