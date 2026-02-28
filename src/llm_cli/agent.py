@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 from platformdirs import user_config_dir
 
 from .api import OpenRouterClient
 from .models import (
+    BranchInfo,
     ChatMessage,
     ChatTurnStats,
     CompressionStatus,
+    StrategyType,
     TokenUsage,
     calculate_usage_cost_usd,
 )
+from .strategy import build_facts_block, build_sliding_window, extract_facts
 
 APP_NAME = "llm-cli"
 HISTORY_FILENAME = "history.json"
@@ -37,8 +41,11 @@ def _history_path() -> Path:
 class Agent:
     """Агент-посредник между пользователем и LLM.
 
-    Хранит историю диалога и управляет параметрами генерации,
-    предоставляя единый метод ``run()`` для взаимодействия.
+    Поддерживает 4 стратегии управления контекстом:
+    - SLIDING_WINDOW: последние N сообщений, остальное отбрасывается.
+    - STICKY_FACTS:   KV-память фактов + последние N сообщений.
+    - SUMMARY:        эвристическое сжатие старой части диалога (исходная стратегия).
+    - BRANCHING:      ветки диалога с независимой историей.
     """
 
     def __init__(
@@ -57,15 +64,32 @@ class Agent:
         self._model = model
         self._temperature = temperature
         self._history_file = _history_path()
+
+        # Общая история (полная, не обрезанная).
         self._raw_history: list[ChatMessage] = []
+
+        # Summary-стратегия.
         self._summary_text = ""
         self._summary_source_messages = 0
+
+        # Sticky Facts — словарь ключ→значение.
+        self._facts: dict[str, str] = {}
+
+        # Branching — хранилище веток.
+        self._branches: dict[str, dict[str, object]] = {}
+        self._current_branch: str | None = None
+
+        # Настройки стратегий.
+        self._strategy: StrategyType = StrategyType.SUMMARY
         self._compression_enabled = compression_enabled
         self._keep_last_n = max(1, keep_last_n)
         self._summarize_every = max(1, summarize_every)
         self._min_messages_for_summary = max(1, min_messages_for_summary)
+
         self._load_state()
         self._restored_messages_count = len(self._raw_history)
+
+        # Метрики сессии.
         self._session_prompt_tokens = 0
         self._session_completion_tokens = 0
         self._session_total_tokens = 0
@@ -78,6 +102,10 @@ class Agent:
             if not has_system:
                 self._raw_history.insert(0, ChatMessage(role="system", content=system_prompt))
                 self._save_state()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Properties
+    # ─────────────────────────────────────────────────────────────────────────
 
     @property
     def model(self) -> str:
@@ -105,29 +133,48 @@ class Agent:
 
     @property
     def compression_enabled(self) -> bool:
-        return self._compression_enabled
+        """Обратная совместимость: True когда стратегия — SUMMARY."""
+        return self._strategy == StrategyType.SUMMARY
 
     @compression_enabled.setter
     def compression_enabled(self, value: bool) -> None:
-        self._compression_enabled = value
+        self._strategy = StrategyType.SUMMARY if value else StrategyType.SLIDING_WINDOW
         self._save_state()
+
+    @property
+    def strategy(self) -> StrategyType:
+        return self._strategy
+
+    @strategy.setter
+    def strategy(self, value: StrategyType) -> None:
+        self._strategy = value
+        self._save_state()
+
+    @property
+    def facts(self) -> dict[str, str]:
+        return dict(self._facts)
 
     @property
     def compression_status(self) -> CompressionStatus:
         _, dialog_messages = _split_system_and_dialog(self._raw_history)
         compressed_count = max(0, len(dialog_messages) - self._keep_last_n)
         return CompressionStatus(
-            enabled=self._compression_enabled,
+            enabled=self._strategy == StrategyType.SUMMARY,
             keep_last_n=self._keep_last_n,
             summarize_every=self._summarize_every,
             min_messages_for_summary=self._min_messages_for_summary,
             summary_chars=len(self._summary_text),
             compressed_messages_count=compressed_count,
+            strategy=self._strategy.value,
         )
 
     @property
     def last_turn_stats(self) -> ChatTurnStats | None:
         return self._last_turn_stats
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Session metrics
+    # ─────────────────────────────────────────────────────────────────────────
 
     def get_session_totals(self) -> tuple[int, int, int, float]:
         return (
@@ -144,6 +191,10 @@ class Agent:
         self._session_cost_usd = 0.0
         self._last_turn_stats = None
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Public chat API
+    # ─────────────────────────────────────────────────────────────────────────
+
     def run(self, user_input: str, transforms: list[str] | None = None) -> str:
         reply, _ = self.run_with_stats(user_input, transforms=transforms)
         return reply
@@ -151,15 +202,15 @@ class Agent:
     def run_with_stats(
         self, user_input: str, transforms: list[str] | None = None
     ) -> tuple[str, ChatTurnStats]:
-        """Отправить сообщение пользователя в LLM и вернуть ответ.
-
-        Автоматически добавляет сообщение и ответ в историю,
-        так что следующий вызов ``run()`` будет содержать весь контекст.
-        """
+        """Отправить сообщение пользователя в LLM и вернуть ответ со статистикой."""
         user_message = ChatMessage(role="user", content=user_input)
         self._raw_history.append(user_message)
         previous_summary = self._summary_text
         previous_summary_source = self._summary_source_messages
+
+        # Обновить KV-факты до отправки запроса.
+        if self._strategy == StrategyType.STICKY_FACTS:
+            self._facts = extract_facts(user_input, self._facts)
 
         request_tokens_estimated = _estimate_text_tokens(user_input)
         messages_for_request, compression_meta = self._build_messages_for_request()
@@ -174,7 +225,6 @@ class Agent:
                 transforms=transforms,
             )
         except Exception:
-            # Не сохраняем в истории неуспешный пользовательский ход.
             self._raw_history.pop()
             self._summary_text = previous_summary
             self._summary_source_messages = previous_summary_source
@@ -199,85 +249,111 @@ class Agent:
         self._raw_history = system
         self._summary_text = ""
         self._summary_source_messages = 0
+        self._facts = {}
+        self._current_branch = None
         self._save_state()
         self._last_turn_stats = None
 
-    def _load_state(self) -> None:
-        if not self._history_file.exists():
-            return
+    # ─────────────────────────────────────────────────────────────────────────
+    # Branching API
+    # ─────────────────────────────────────────────────────────────────────────
 
-        try:
-            raw_text = self._history_file.read_text(encoding="utf-8")
-            if not raw_text.strip():
-                return
-            payload = json.loads(raw_text)
-        except (OSError, json.JSONDecodeError):
-            return
+    def branch_save(self, name: str) -> None:
+        """Сохранить снимок текущей истории как ветку с данным именем."""
+        self._branches[name] = {
+            "history": [msg.model_dump() for msg in self._raw_history],
+            "facts": dict(self._facts),
+            "summary_text": self._summary_text,
+            "summary_source_messages": self._summary_source_messages,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        self._current_branch = name
+        self._save_state()
 
-        # Обратная совместимость со старым форматом: просто список сообщений.
-        if isinstance(payload, list):
-            self._raw_history = _validate_messages(payload)
-            self._summary_text = ""
-            self._summary_source_messages = 0
-            return
+    def branch_switch(self, name: str) -> None:
+        """Переключиться на сохранённую ветку."""
+        if name not in self._branches:
+            raise ValueError(f"Ветка «{name}» не найдена. Доступные: {list(self._branches)}")
+        snap = self._branches[name]
+        self._raw_history = _validate_messages(snap.get("history", []))  # type: ignore[arg-type]
+        self._facts = dict(snap.get("facts", {}))  # type: ignore[arg-type]
+        self._summary_text = str(snap.get("summary_text", "") or "")
+        self._summary_source_messages = int(snap.get("summary_source_messages", 0) or 0)
+        self._current_branch = name
+        self._save_state()
 
-        if not isinstance(payload, dict):
-            return
-
-        self._raw_history = _validate_messages(payload.get("raw_history", []))
-        self._summary_text = str(payload.get("summary_text", "") or "")
-        self._summary_source_messages = int(payload.get("summary_source_messages", 0) or 0)
-
-        compression = payload.get("compression", {})
-        if isinstance(compression, dict):
-            self._compression_enabled = bool(
-                compression.get("enabled", self._compression_enabled)
+    def branch_list(self) -> list[BranchInfo]:
+        """Вернуть список сохранённых веток."""
+        result: list[BranchInfo] = []
+        for name, snap in self._branches.items():
+            msgs = snap.get("history", [])
+            result.append(
+                BranchInfo(
+                    name=name,
+                    created_at=str(snap.get("created_at", "")),
+                    messages_count=len(msgs) if isinstance(msgs, list) else 0,  # type: ignore[arg-type]
+                )
             )
-            self._keep_last_n = max(
-                1,
-                int(compression.get("keep_last_n", self._keep_last_n) or self._keep_last_n),
-            )
-            self._summarize_every = max(
-                1,
-                int(
-                    compression.get("summarize_every", self._summarize_every)
-                    or self._summarize_every
-                ),
-            )
-            self._min_messages_for_summary = max(
-                1,
-                int(
-                    compression.get(
-                        "min_messages_for_summary", self._min_messages_for_summary
-                    )
-                    or self._min_messages_for_summary
-                ),
-            )
+        return result
 
-    def _save_state(self) -> None:
-        try:
-            self._history_file.parent.mkdir(parents=True, exist_ok=True)
-            data = {
-                "raw_history": [msg.model_dump() for msg in self._raw_history],
-                "summary_text": self._summary_text,
-                "summary_source_messages": self._summary_source_messages,
-                "compression": {
-                    "enabled": self._compression_enabled,
-                    "keep_last_n": self._keep_last_n,
-                    "summarize_every": self._summarize_every,
-                    "min_messages_for_summary": self._min_messages_for_summary,
-                },
-            }
-            self._history_file.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except OSError:
-            # Не прерываем чат, если не удалось сохранить историю.
-            return
+    @property
+    def current_branch(self) -> str | None:
+        return self._current_branch
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Internal: build messages for request
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _build_messages_for_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
-        if not self._compression_enabled:
+        """Диспетчер по стратегии: вернуть список сообщений для отправки в API."""
+        if self._strategy == StrategyType.SLIDING_WINDOW:
+            return self._build_sliding_window_request()
+        if self._strategy == StrategyType.STICKY_FACTS:
+            return self._build_sticky_facts_request()
+        if self._strategy == StrategyType.BRANCHING:
+            return self._build_branching_request()
+        # По умолчанию — summary (исходная логика).
+        return self._build_summary_request()
+
+    def _build_sliding_window_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
+        msgs = build_sliding_window(self._raw_history, self._keep_last_n)
+        dropped = max(0, len([m for m in self._raw_history if m.role != "system"]) - self._keep_last_n)
+        return msgs, {
+            "used_summary": False,
+            "summary_chars": 0,
+            "compressed_messages_count": dropped,
+        }
+
+    def _build_sticky_facts_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
+        system_msgs, dialog_msgs = _split_system_and_dialog(self._raw_history)
+        tail = dialog_msgs[-self._keep_last_n:] if self._keep_last_n > 0 else []
+
+        messages: list[ChatMessage] = list(system_msgs)
+        facts_block = build_facts_block(self._facts)
+        if facts_block:
+            messages.append(ChatMessage(role="system", content=facts_block))
+        messages.extend(tail)
+
+        dropped = max(0, len(dialog_msgs) - self._keep_last_n)
+        return messages, {
+            "used_summary": bool(facts_block),
+            "summary_chars": len(facts_block),
+            "compressed_messages_count": dropped,
+        }
+
+    def _build_branching_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
+        # В режиме branching используем sliding window по умолчанию.
+        msgs = build_sliding_window(self._raw_history, self._keep_last_n)
+        dropped = max(0, len([m for m in self._raw_history if m.role != "system"]) - self._keep_last_n)
+        return msgs, {
+            "used_summary": False,
+            "summary_chars": 0,
+            "compressed_messages_count": dropped,
+        }
+
+    def _build_summary_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
+        """Исходная логика summary-сжатия."""
+        if not self._compression_enabled and self._strategy != StrategyType.SUMMARY:
             return list(self._raw_history), {
                 "used_summary": False,
                 "summary_chars": len(self._summary_text),
@@ -302,7 +378,7 @@ class Agent:
                 "compressed_messages_count": 0,
             }
 
-        archive_messages = dialog_messages[:-self._keep_last_n]
+        archive_messages = dialog_messages[: -self._keep_last_n]
         tail_messages = dialog_messages[-self._keep_last_n :]
         self._refresh_summary_if_needed(archive_messages)
 
@@ -317,7 +393,6 @@ class Agent:
             )
         messages_for_request.extend(tail_messages)
 
-        # Защита: если сжатый контекст не меньше исходного, не используем summary.
         raw_estimated = _estimate_messages_tokens(self._raw_history)
         compressed_estimated = _estimate_messages_tokens(messages_for_request)
         if compressed_estimated >= raw_estimated:
@@ -332,6 +407,10 @@ class Agent:
             "summary_chars": len(self._summary_text),
             "compressed_messages_count": len(archive_messages),
         }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Internal: summary helpers
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _refresh_summary_if_needed(self, archive_messages: list[ChatMessage]) -> None:
         archive_count = len(archive_messages)
@@ -352,6 +431,10 @@ class Agent:
         self._summary_text = _build_heuristic_summary(archive_messages)
         self._summary_source_messages = archive_count
         self._save_state()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Internal: stats
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _build_turn_stats(
         self,
@@ -382,15 +465,110 @@ class Agent:
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             turn_cost_usd=turn_cost,
-            compression_enabled=self._compression_enabled,
+            compression_enabled=self._strategy == StrategyType.SUMMARY,
             used_summary=bool(compression_meta.get("used_summary", False)),
             summary_chars=int(compression_meta.get("summary_chars", 0)),
             compressed_messages_count=int(compression_meta.get("compressed_messages_count", 0)),
+            strategy=self._strategy.value,
             session_prompt_tokens=self._session_prompt_tokens,
             session_completion_tokens=self._session_completion_tokens,
             session_total_tokens=self._session_total_tokens,
             session_cost_usd=self._session_cost_usd,
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Internal: persistence
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _load_state(self) -> None:
+        if not self._history_file.exists():
+            return
+
+        try:
+            raw_text = self._history_file.read_text(encoding="utf-8")
+            if not raw_text.strip():
+                return
+            payload = json.loads(raw_text)
+        except (OSError, json.JSONDecodeError):
+            return
+
+        # Обратная совместимость со старым форматом: просто список сообщений.
+        if isinstance(payload, list):
+            self._raw_history = _validate_messages(payload)
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        self._raw_history = _validate_messages(payload.get("raw_history", []))
+        self._summary_text = str(payload.get("summary_text", "") or "")
+        self._summary_source_messages = int(payload.get("summary_source_messages", 0) or 0)
+
+        raw_facts = payload.get("facts", {})
+        if isinstance(raw_facts, dict):
+            self._facts = {str(k): str(v) for k, v in raw_facts.items()}
+
+        raw_branches = payload.get("branches", {})
+        if isinstance(raw_branches, dict):
+            self._branches = raw_branches  # type: ignore[assignment]
+
+        self._current_branch = payload.get("current_branch") or None
+
+        raw_strategy = payload.get("strategy")
+        if raw_strategy:
+            try:
+                self._strategy = StrategyType(raw_strategy)
+            except ValueError:
+                pass
+
+        compression = payload.get("compression", {})
+        if isinstance(compression, dict):
+            self._compression_enabled = bool(
+                compression.get("enabled", self._compression_enabled)
+            )
+            self._keep_last_n = max(
+                1,
+                int(compression.get("keep_last_n", self._keep_last_n) or self._keep_last_n),
+            )
+            self._summarize_every = max(
+                1,
+                int(
+                    compression.get("summarize_every", self._summarize_every)
+                    or self._summarize_every
+                ),
+            )
+            self._min_messages_for_summary = max(
+                1,
+                int(
+                    compression.get("min_messages_for_summary", self._min_messages_for_summary)
+                    or self._min_messages_for_summary
+                ),
+            )
+
+    def _save_state(self) -> None:
+        try:
+            self._history_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "raw_history": [msg.model_dump() for msg in self._raw_history],
+                "summary_text": self._summary_text,
+                "summary_source_messages": self._summary_source_messages,
+                "facts": self._facts,
+                "branches": self._branches,
+                "current_branch": self._current_branch,
+                "strategy": self._strategy.value,
+                "compression": {
+                    "enabled": self._compression_enabled,
+                    "keep_last_n": self._keep_last_n,
+                    "summarize_every": self._summarize_every,
+                    "min_messages_for_summary": self._min_messages_for_summary,
+                },
+            }
+            self._history_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            return
 
     def _ensure_default_system_prompt(self) -> None:
         has_system = any(msg.role == "system" for msg in self._raw_history)
@@ -399,6 +577,10 @@ class Agent:
         self._raw_history.insert(0, ChatMessage(role="system", content=DEFAULT_SYSTEM_PROMPT))
         self._save_state()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Module-level helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _estimate_text_tokens(text: str) -> int:
     # Грубая эвристика для CLI-демонстрации: ~1 токен на 4 символа.
@@ -526,7 +708,6 @@ def _build_heuristic_summary(messages: list[ChatMessage]) -> str:
     if len(summary) <= SUMMARY_MAX_CHARS:
         return summary
 
-    # Ультра-компактная версия для строгого лимита.
     compact_lines = [
         f"Проект={project or 'не указано'}; Клиент={client or 'не указано'}; "
         f"Дедлайн={deadline or 'не указано'}; Бюджет={budget or 'не указано'};",

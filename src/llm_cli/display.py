@@ -7,7 +7,8 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-from .models import BenchmarkResult, ChatTurnStats, ModelConfig
+from .models import BenchmarkResult, BranchInfo, ChatTurnStats, ModelConfig, StrategyType
+from .strategy import STRATEGY_LABELS
 
 console = Console()
 
@@ -19,14 +20,17 @@ def print_welcome(model: str, temperature: float | None) -> None:
             "[bold]LLM CLI Chat[/bold]\n"
             f"Модель: [cyan]{model}[/cyan]\n"
             f"Температура: [cyan]{temperature if temperature is not None else 'по умолчанию (0.2)'}[/cyan]\n\n"
-            "Команды: [yellow]/temp 0.7[/yellow] — температура, "
-            "[yellow]/compare[/yellow] — сравнить модели, "
-            "[yellow]/demo-compare[/yellow] — авто-сравнение off/on, "
-            "[yellow]/model <id>[/yellow] — сменить модель, "
-            "[yellow]/compress on|off[/yellow] — сжатие контекста, "
-            "[yellow]/overflow 9000[/yellow] — тест переполнения контекста, "
-            "[yellow]exit[/yellow] — выход\n"
-            "Введите сообщение (двойной Enter — отправить)",
+            "Команды:\n"
+            "  [yellow]/strategy sliding|facts|summary|branch[/yellow] — стратегия контекста\n"
+            "  [yellow]/branch save [имя][/yellow] / [yellow]/branch switch <имя>[/yellow] / [yellow]/branch list[/yellow] — ветки\n"
+            "  [yellow]/facts[/yellow] — показать KV-память (стратегия facts)\n"
+            "  [yellow]/compress on|off[/yellow] — включить/выключить summary-сжатие\n"
+            "  [yellow]/demo-strategies[/yellow] — сравнение 3 стратегий\n"
+            "  [yellow]/demo-branch[/yellow] — демо веток: общий старт → 2 ветки → сравнение\n"
+            "  [yellow]/demo-compare[/yellow] — сравнение off/on summary\n"
+            "  [yellow]/temp 0.7[/yellow] — температура, [yellow]/model <id>[/yellow] — модель\n"
+            "  [yellow]/overflow 9000[/yellow] — тест переполнения, [yellow]/clear[/yellow] — очистить историю\n"
+            "  [yellow]exit[/yellow] — выход  |  двойной Enter — отправить сообщение",
             title="[bold cyan]LLM CLI[/bold cyan]",
             border_style="cyan",
         )
@@ -80,16 +84,16 @@ def print_chat_turn_stats(stats: ChatTurnStats) -> None:
             f"{stats.sent_history_tokens_estimated} токенов (оценка)"
             "[/dim]"
         )
+    strategy_label = STRATEGY_LABELS.get(StrategyType(stats.strategy), stats.strategy)
+    console.print(f"[dim]Стратегия: {strategy_label}[/dim]")
     if stats.compression_enabled:
         state = "использован" if stats.used_summary else "не использован"
         console.print(
             "[dim]"
-            f"Компрессия: on, summary {state}, summary_chars={stats.summary_chars}, "
+            f"Summary {state}, summary_chars={stats.summary_chars}, "
             f"сжато сообщений={stats.compressed_messages_count}"
             "[/dim]"
         )
-    else:
-        console.print("[dim]Компрессия: off[/dim]")
     console.print(
         "[bold]Стоимость:[/bold] "
         f"за ход={turn_cost}, "
@@ -102,6 +106,61 @@ def print_chat_turn_stats(stats: ChatTurnStats) -> None:
         f"total={stats.session_total_tokens}"
         "[/dim]"
     )
+    console.print()
+
+
+def print_strategy_status(agent: object) -> None:
+    """Вывести текущую стратегию и релевантные параметры агента."""
+    from .agent import Agent  # локальный импорт для избежания цикла
+
+    if not isinstance(agent, Agent):
+        return
+
+    strategy = agent.strategy
+    label = STRATEGY_LABELS.get(strategy, strategy.value)
+    status = agent.compression_status
+
+    console.print(f"[dim]Стратегия: {label}[/dim]", end="")
+
+    if strategy == StrategyType.SLIDING_WINDOW:
+        console.print(f"[dim] | keep_last_n={status.keep_last_n}[/dim]")
+    elif strategy == StrategyType.STICKY_FACTS:
+        facts_count = len(agent.facts)
+        console.print(f"[dim] | keep_last_n={status.keep_last_n} | фактов в памяти={facts_count}[/dim]")
+    elif strategy == StrategyType.SUMMARY:
+        console.print(
+            f"[dim] | keep_last_n={status.keep_last_n} | "
+            f"summary_chars={status.summary_chars} | "
+            f"сжато={status.compressed_messages_count}[/dim]"
+        )
+    elif strategy == StrategyType.BRANCHING:
+        branch = agent.current_branch or "—"
+        branches_count = len(agent.branch_list())
+        console.print(
+            f"[dim] | текущая ветка={branch} | веток={branches_count}[/dim]"
+        )
+    else:
+        console.print()
+    console.print()
+
+
+def print_branch_list(branches: list[BranchInfo], current: str | None) -> None:
+    table = Table(title="Ветки диалога", show_lines=True)
+    table.add_column("Имя", style="bold")
+    table.add_column("Создана")
+    table.add_column("Сообщений", justify="right")
+    table.add_column("Активна", justify="center")
+
+    for branch in branches:
+        is_current = "✓" if branch.name == current else ""
+        table.add_row(
+            branch.name,
+            branch.created_at,
+            str(branch.messages_count),
+            is_current,
+        )
+    console.print()
+    console.print(table)
     console.print()
 
 

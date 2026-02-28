@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pydantic import BaseModel, Field
+
+
+class StrategyType(str, Enum):
+    SLIDING_WINDOW = "sliding"
+    STICKY_FACTS = "facts"
+    SUMMARY = "summary"
+    BRANCHING = "branch"
 
 
 class ChatMessage(BaseModel):
@@ -36,6 +45,7 @@ class ChatTurnStats(BaseModel):
     used_summary: bool = False
     summary_chars: int = 0
     compressed_messages_count: int = 0
+    strategy: str = StrategyType.SUMMARY.value
     session_prompt_tokens: int = 0
     session_completion_tokens: int = 0
     session_total_tokens: int = 0
@@ -49,6 +59,13 @@ class CompressionStatus(BaseModel):
     min_messages_for_summary: int
     summary_chars: int
     compressed_messages_count: int
+    strategy: str = StrategyType.SUMMARY.value
+
+
+class BranchInfo(BaseModel):
+    name: str
+    created_at: str
+    messages_count: int
 
 
 class ChatError(BaseModel):
