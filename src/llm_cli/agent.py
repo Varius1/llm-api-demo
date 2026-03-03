@@ -10,6 +10,7 @@ from pathlib import Path
 from platformdirs import user_config_dir
 
 from .api import OpenRouterClient
+from .memory import MemoryManager
 from .models import (
     BranchInfo,
     ChatMessage,
@@ -78,6 +79,9 @@ class Agent:
         # Branching — хранилище веток.
         self._branches: dict[str, dict[str, object]] = {}
         self._current_branch: str | None = None
+
+        # Модель памяти: рабочая + долговременная.
+        self._memory = MemoryManager()
 
         # Настройки стратегий.
         self._strategy: StrategyType = StrategyType.SUMMARY
@@ -155,6 +159,10 @@ class Agent:
         return dict(self._facts)
 
     @property
+    def memory(self) -> MemoryManager:
+        return self._memory
+
+    @property
     def compression_status(self) -> CompressionStatus:
         _, dialog_messages = _split_system_and_dialog(self._raw_history)
         compressed_count = max(0, len(dialog_messages) - self._keep_last_n)
@@ -208,6 +216,9 @@ class Agent:
         previous_summary = self._summary_text
         previous_summary_source = self._summary_source_messages
 
+        # Обновить рабочую память из сообщения пользователя.
+        self._memory.update_working_from_message(user_input)
+
         # Обновить KV-факты до отправки запроса.
         if self._strategy == StrategyType.STICKY_FACTS:
             self._facts = extract_facts(user_input, self._facts)
@@ -251,6 +262,7 @@ class Agent:
         self._summary_source_messages = 0
         self._facts = {}
         self._current_branch = None
+        self._memory.clear_working()
         self._save_state()
         self._last_turn_stats = None
 
@@ -307,13 +319,26 @@ class Agent:
     def _build_messages_for_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
         """Диспетчер по стратегии: вернуть список сообщений для отправки в API."""
         if self._strategy == StrategyType.SLIDING_WINDOW:
-            return self._build_sliding_window_request()
-        if self._strategy == StrategyType.STICKY_FACTS:
-            return self._build_sticky_facts_request()
-        if self._strategy == StrategyType.BRANCHING:
-            return self._build_branching_request()
-        # По умолчанию — summary (исходная логика).
-        return self._build_summary_request()
+            messages, meta = self._build_sliding_window_request()
+        elif self._strategy == StrategyType.STICKY_FACTS:
+            messages, meta = self._build_sticky_facts_request()
+        elif self._strategy == StrategyType.BRANCHING:
+            messages, meta = self._build_branching_request()
+        else:
+            # По умолчанию — summary (исходная логика).
+            messages, meta = self._build_summary_request()
+
+        # Инъекция профиля пользователя — между основным system-промптом и памятью.
+        profile_block = self._memory.build_profile_block()
+        if profile_block:
+            messages = _inject_memory_block(messages, profile_block)
+
+        # Инъекция блока памяти как system-сообщение после профиля.
+        memory_block = self._memory.build_context_block()
+        if memory_block:
+            messages = _inject_memory_block(messages, memory_block)
+
+        return messages, meta
 
     def _build_sliding_window_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
         msgs = build_sliding_window(self._raw_history, self._keep_last_n)
@@ -514,6 +539,10 @@ class Agent:
 
         self._current_branch = payload.get("current_branch") or None
 
+        raw_working = payload.get("working_memory")
+        if isinstance(raw_working, dict):
+            self._memory.working_from_dict(raw_working)
+
         raw_strategy = payload.get("strategy")
         if raw_strategy:
             try:
@@ -562,6 +591,7 @@ class Agent:
                     "summarize_every": self._summarize_every,
                     "min_messages_for_summary": self._min_messages_for_summary,
                 },
+                "working_memory": self._memory.working_to_dict(),
             }
             self._history_file.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -753,3 +783,22 @@ def _extract_value(text: str) -> str:
         return _shrink_snippet(m.group(1).strip(), max_len=90)
 
     return _shrink_snippet(text, max_len=90)
+
+
+def _inject_memory_block(
+    messages: list[ChatMessage], block: str
+) -> list[ChatMessage]:
+    """Вставить блок памяти как system-сообщение после последнего system-сообщения."""
+    result: list[ChatMessage] = []
+    last_system_idx = -1
+    for i, msg in enumerate(messages):
+        if msg.role == "system":
+            last_system_idx = i
+    memory_msg = ChatMessage(role="system", content=block)
+    for i, msg in enumerate(messages):
+        result.append(msg)
+        if i == last_system_idx:
+            result.append(memory_msg)
+    if last_system_idx == -1:
+        result.insert(0, memory_msg)
+    return result

@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from .agent import Agent
@@ -16,9 +17,13 @@ from .display import (
     print_chat_turn_stats,
     print_error,
     print_llm_response,
+    print_memory_state,
+    print_profile,
+    print_profile_list,
     print_strategy_status,
     print_welcome,
 )
+from .memory import PROFILE_EXPERTISE_OPTIONS, PROFILE_FORMAT_OPTIONS, PROFILE_STYLE_OPTIONS, UserProfile
 from .models import BENCHMARK_PROMPT, StrategyType
 from .strategy import STRATEGY_LABELS
 
@@ -126,6 +131,30 @@ def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
             _print_facts(agent)
             continue
 
+        if text == "/memory":
+            print_memory_state(agent.memory, agent.history)
+            continue
+
+        if text.startswith("/profile"):
+            _handle_profile(text, agent)
+            continue
+
+        if text == "/demo-persona":
+            _run_demo_persona(agent)
+            continue
+
+        if text.startswith("/task"):
+            _handle_task(text, agent)
+            continue
+
+        if text.startswith("/remember"):
+            _handle_remember(text, agent)
+            continue
+
+        if text.startswith("/forget"):
+            _handle_forget(text, agent)
+            continue
+
         if text == "/compare":
             console.print()
             run_benchmark(client, benchmark_prompt, cfg.models, agent.temperature)
@@ -141,6 +170,10 @@ def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
 
         if text == "/demo-branch":
             _run_demo_branch(agent)
+            continue
+
+        if text == "/demo-memory":
+            _run_demo_memory(agent)
             continue
 
         if text == "/clear":
@@ -898,6 +931,619 @@ def _print_demo_branch_results(
         "Переключайтесь командой /branch switch main|alt[/dim]"
     )
     console.print()
+
+
+def _run_demo_memory(agent: Agent) -> None:
+    """Демо модели памяти: 3 слоя, явное сохранение, влияние на ответы."""
+    console.print()
+    console.print(
+        "[bold cyan]Demo-Memory запущено.[/bold cyan] "
+        "Демонстрация 3 слоёв памяти: краткосрочной, рабочей и долговременной."
+    )
+    console.print(
+        "[dim]Будет выполнено несколько API-запросов. Нажмите Ctrl+C для отмены.[/dim]\n"
+    )
+
+    original_strategy = agent.strategy
+    original_task = agent.memory.working.task
+
+    # ── Шаг 1: Очистка и исходное состояние ──────────────────────────────────
+    console.rule("[bold]Шаг 1: Исходное состояние памяти (всё пусто)[/bold]", style="dim")
+    agent.clear_history()
+    agent.reset_session_metrics()
+    agent.strategy = StrategyType.SUMMARY
+    console.print("[dim]→ clear_history() выполнен, рабочая память очищена.[/dim]")
+    print_memory_state(agent.memory, agent.history)
+
+    # ── Шаг 2: Заполнить долговременную память (явно) ────────────────────────
+    console.rule(
+        "[bold magenta]Шаг 2: Заполняем долговременную память явно (/remember)[/bold magenta]"
+    )
+    console.print("[dim]Долговременная память — это то, что нужно помнить ВСЕГДА,\nдаже после /clear и перезапуска программы.[/dim]\n")
+
+    console.print("[dim]→ /remember profile язык=Русский[/dim]")
+    agent.memory.remember_profile("язык", "Русский")
+    console.print("[dim]→ /remember profile роль=разработчик[/dim]")
+    agent.memory.remember_profile("роль", "разработчик")
+    console.print("[dim]→ /remember стиль=краткие ответы, без воды[/dim]")
+    agent.memory.remember_knowledge("стиль", "краткие ответы, без воды")
+    console.print("[dim]→ /remember decision Используем OpenRouter API для работы с LLM[/dim]")
+    agent.memory.remember_decision("Используем OpenRouter API для работы с LLM")
+    console.print()
+    console.print("[green]✓ Долговременная память заполнена.[/green]\n")
+
+    # ── Шаг 3: Задать задачу в рабочей памяти (явно) ─────────────────────────
+    console.rule(
+        "[bold cyan]Шаг 3: Задаём задачу в рабочей памяти (/task)[/bold cyan]"
+    )
+    console.print("[dim]Рабочая память — данные текущей задачи, очищается при /clear.[/dim]\n")
+
+    task_text = "Разработать модуль памяти для LLM-ассистента"
+    console.print(f"[dim]→ /task {task_text}[/dim]")
+    agent.memory.set_task(task_text)
+    agent.memory.add_goal("Реализовать 3 независимых слоя памяти")
+    agent.memory.add_goal("Не сломать существующие 4 стратегии контекста")
+    agent._save_state()
+    console.print("[green]✓ Задача и цели установлены в рабочую память.[/green]\n")
+
+    # ── Шаг 4: Отправить сообщение — авто-извлечение в рабочую память ────────
+    console.rule(
+        "[bold cyan]Шаг 4: Авто-извлечение фактов в рабочую память[/bold cyan]"
+    )
+    console.print("[dim]Пользователь называет детали проекта — они попадают в рабочую память автоматически.[/dim]\n")
+
+    auto_facts_messages = [
+        "проект: LLM Memory Demo",
+        "стек: Python, Rich, Pydantic, OpenRouter API",
+        "дедлайн: конец марта 2026",
+    ]
+    for msg in auto_facts_messages:
+        console.print(f"[dim]→ отправляем: \"{msg}\"[/dim]")
+        with console.status("[cyan]авто-извлечение...[/cyan]", spinner="dots"):
+            try:
+                _run_demo_request_with_retry(agent, msg)
+            except Exception as e:
+                print_error(f"Ошибка: {e}")
+                agent.strategy = original_strategy
+                return
+
+    console.print("[green]✓ Факты авто-извлечены в рабочую память.[/green]\n")
+
+    # ── Шаг 5: Показать состояние всех 3 слоёв памяти ────────────────────────
+    console.rule("[bold]Шаг 5: Состояние всех 3 слоёв памяти[/bold]", style="yellow")
+    console.print(
+        "[dim]Теперь посмотрим что попало в каждый слой:[/dim]\n"
+    )
+    print_memory_state(agent.memory, agent.history, keep_last_n=4)
+
+    # ── Шаг 6: Вопрос БЕЗ знания о памяти — чтобы показать влияние ───────────
+    console.rule(
+        "[bold yellow]Шаг 6: Контрольный вопрос — влияние памяти на ответ[/bold yellow]"
+    )
+    console.print(
+        "[dim]Спрашиваем у ассистента о текущем контексте.\n"
+        "В запрос автоматически вставлен блок [КОНТЕКСТ ПАМЯТИ], который содержит\n"
+        "данные из рабочей и долговременной памяти.[/dim]\n"
+    )
+
+    question_with_memory = (
+        "Коротко: какую задачу я сейчас решаю, что уже известно о проекте "
+        "и в каком стиле тебе отвечать? Ответь в 3 пунктах."
+    )
+    console.print(f"[bold]Вопрос:[/bold] {question_with_memory}\n")
+    with console.status("[bold cyan]Думаю...[/bold cyan]", spinner="dots"):
+        try:
+            answer_with_memory, _ = _run_demo_request_with_retry(agent, question_with_memory)
+        except Exception as e:
+            print_error(f"Ошибка: {e}")
+            agent.strategy = original_strategy
+            return
+    console.print("[bold green]Ответ (память активна):[/bold green]")
+    from .display import print_llm_response
+    print_llm_response(answer_with_memory)
+
+    # ── Шаг 7: Очищаем историю и проверяем что долговременная выжила ──────────
+    console.rule(
+        "[bold magenta]Шаг 7: /clear — рабочая память очищена, долговременная выжила[/bold magenta]"
+    )
+    console.print("[dim]→ выполняем /clear...[/dim]")
+    agent.clear_history()
+    console.print("[green]✓ История очищена. Краткосрочная и рабочая память — пусты.[/green]")
+    console.print("[green]  Долговременная память сохранена (отдельный файл).[/green]\n")
+    print_memory_state(agent.memory, agent.history)
+
+    # ── Шаг 8: Тот же вопрос после /clear — долговременная всё ещё влияет ────
+    console.rule(
+        "[bold yellow]Шаг 8: Тот же вопрос после /clear — только долговременная память[/bold yellow]"
+    )
+    console.print(
+        "[dim]Рабочей памяти больше нет, но профиль и знания из долговременной — остались.[/dim]\n"
+    )
+    console.print(f"[bold]Вопрос:[/bold] {question_with_memory}\n")
+    with console.status("[bold cyan]Думаю...[/bold cyan]", spinner="dots"):
+        try:
+            answer_after_clear, _ = _run_demo_request_with_retry(agent, question_with_memory)
+        except Exception as e:
+            print_error(f"Ошибка: {e}")
+            agent.strategy = original_strategy
+            return
+    console.print("[bold green]Ответ (только долговременная память):[/bold green]")
+    print_llm_response(answer_after_clear)
+
+    # ── Итог ──────────────────────────────────────────────────────────────────
+    console.rule("[bold cyan]ИТОГ: Demo-Memory[/bold cyan]")
+    _print_demo_memory_summary(answer_with_memory, answer_after_clear)
+
+    agent.strategy = original_strategy
+
+
+def _print_demo_memory_summary(answer_with: str, answer_after: str) -> None:
+    """Вывести итоговое сравнение ответов с памятью и после /clear."""
+    table = Table(title="Влияние слоёв памяти на ответ", show_lines=True)
+    table.add_column("Слой памяти", style="bold", min_width=22)
+    table.add_column("Состояние", justify="center")
+    table.add_column("Хранилище")
+    table.add_column("Очищается при /clear", justify="center")
+
+    table.add_row(
+        "[yellow]Краткосрочная[/yellow]",
+        "автоматически",
+        "RAM (raw_history)",
+        "[red]да[/red]",
+    )
+    table.add_row(
+        "[cyan]Рабочая[/cyan]",
+        "/task, авто-извлечение",
+        "history.json",
+        "[red]да[/red]",
+    )
+    table.add_row(
+        "[magenta]Долговременная[/magenta]",
+        "/remember (явно)",
+        "long_term_memory.json",
+        "[green]нет[/green]",
+    )
+    console.print()
+    console.print(table)
+
+    console.print()
+    console.rule("[bold]Сравнение ответов[/bold]", style="dim")
+    console.print(
+        "[bold]До /clear[/bold] [dim](рабочая + долговременная):[/dim]\n"
+        + _one_line(answer_with)[:300]
+    )
+    console.print()
+    console.print(
+        "[bold]После /clear[/bold] [dim](только долговременная):[/dim]\n"
+        + _one_line(answer_after)[:300]
+    )
+    console.print()
+    console.print(
+        "[dim]Вывод: разные слои памяти хранятся независимо. "
+        "Долговременная память пережила /clear и продолжает влиять на ответы. "
+        "Используйте /memory, /task, /remember, /forget для явного управления.[/dim]"
+    )
+    console.print()
+
+
+def _handle_profile(text: str, agent: Agent) -> None:
+    raw = text.removeprefix("/profile").strip()
+    parts = raw.split(maxsplit=2)
+    sub = parts[0].lower() if parts else ""
+
+    mem = agent.memory
+
+    # /profile  — показать активный профиль
+    if not sub:
+        profile = mem.get_active_profile()
+        active_name = mem.get_active_profile_name()
+        if profile is None:
+            console.print("[dim]Активный профиль не выбран. Используйте /profile new <имя>.[/dim]\n")
+        else:
+            print_profile(profile, active_name, active=True)
+        return
+
+    # /profile list
+    if sub == "list":
+        profiles = mem.long_term.profiles
+        active_name = mem.get_active_profile_name()
+        print_profile_list(profiles, active_name)
+        return
+
+    # /profile new <имя>
+    if sub == "new":
+        name = parts[1].strip() if len(parts) > 1 else ""
+        if not name:
+            print_error("Использование: /profile new <имя>")
+            return
+        profile = _profile_wizard(name)
+        mem.save_profile(name, profile)
+        mem.switch_profile(name)
+        console.print(f"[green]Профиль «{name}» создан и активирован.[/green]\n")
+        print_profile(profile, name, active=True)
+        return
+
+    # /profile switch <имя>
+    if sub == "switch":
+        name = parts[1].strip() if len(parts) > 1 else ""
+        if not name:
+            print_error("Использование: /profile switch <имя>")
+            return
+        try:
+            mem.switch_profile(name)
+            profile = mem.get_active_profile()
+            console.print(f"[green]Переключено на профиль «{name}».[/green]\n")
+            if profile:
+                print_profile(profile, name, active=True)
+        except ValueError as e:
+            print_error(str(e))
+        return
+
+    # /profile set <поле> <значение>
+    if sub == "set":
+        active_name = mem.get_active_profile_name()
+        if not active_name:
+            print_error("Нет активного профиля. Создайте: /profile new <имя>")
+            return
+        if len(parts) < 3:
+            print_error(
+                "Использование: /profile set <поле> <значение>\n"
+                f"Поля: name, language, style {PROFILE_STYLE_OPTIONS}, "
+                f"format {PROFILE_FORMAT_OPTIONS}, expertise {PROFILE_EXPERTISE_OPTIONS}, "
+                "domain, constraint"
+            )
+            return
+        field = parts[1].strip()
+        value = parts[2].strip()
+        try:
+            known = mem.set_profile_field(active_name, field, value)
+            if known:
+                console.print(f"[green]Профиль «{active_name}»: {field} = {value}[/green]\n")
+            else:
+                print_error(
+                    f"Неизвестное поле «{field}». "
+                    "Доступные: name, language, style, format, expertise, domain, constraint"
+                )
+        except ValueError as e:
+            print_error(str(e))
+        return
+
+    # /profile delete <имя>
+    if sub == "delete":
+        name = parts[1].strip() if len(parts) > 1 else ""
+        if not name:
+            print_error("Использование: /profile delete <имя>")
+            return
+        removed = mem.delete_profile(name)
+        if removed:
+            console.print(f"[green]Профиль «{name}» удалён.[/green]\n")
+        else:
+            print_error(f"Профиль «{name}» не найден.")
+        return
+
+    # /profile reset
+    if sub == "reset":
+        mem.deactivate_profile()
+        console.print("[yellow]Активный профиль отключён. Используется дефолтное поведение.[/yellow]\n")
+        return
+
+    # /profile clear
+    if sub == "clear":
+        names = mem.list_profiles()
+        if not names:
+            console.print("[dim]Профилей нет.[/dim]\n")
+            return
+        for name in names:
+            mem.delete_profile(name)
+        console.print(f"[green]Удалено профилей: {len(names)}.[/green]\n")
+        return
+
+    print_error(
+        f"Неизвестная подкоманда: «{sub}».\n"
+        "Доступные: list, new, switch, set, delete, reset, clear"
+    )
+
+
+def _profile_wizard(name: str) -> UserProfile:
+    """Интерактивный мастер создания профиля."""
+    console.print(f"\n[bold cyan]Создание профиля «{name}»[/bold cyan]")
+    console.print("[dim]Нажмите Enter чтобы оставить дефолтное значение.[/dim]\n")
+
+    def ask(prompt: str, default: str, options: tuple[str, ...] | None = None) -> str:
+        hint = f" [{default}]"
+        if options:
+            hint += f" ({'/'.join(options)})"
+        console.print(f"  {prompt}{hint}: ", end="")
+        try:
+            val = input().strip()
+        except EOFError:
+            val = ""
+        return val if val else default
+
+    profile_name = ask("Ваше имя (для обращения)", "")
+    language = ask("Язык ответов", "русский")
+    style = ask("Стиль", "нейтральный", PROFILE_STYLE_OPTIONS)
+    fmt = ask("Формат", "markdown", PROFILE_FORMAT_OPTIONS)
+    expertise = ask("Уровень", "средний", PROFILE_EXPERTISE_OPTIONS)
+    domain = ask("Область работы", "")
+
+    constraints: list[str] = []
+    console.print("  Ограничения (Enter для пропуска, пустая строка — конец):")
+    for _ in range(5):
+        console.print("    > ", end="")
+        try:
+            c = input().strip()
+        except EOFError:
+            break
+        if not c:
+            break
+        constraints.append(c)
+
+    console.print()
+    return UserProfile(
+        name=profile_name,
+        language=language,
+        style=style,
+        format=fmt,
+        expertise=expertise,
+        domain=domain,
+        constraints=constraints,
+    )
+
+
+# Вопрос для сравнения профилей в демо
+DEMO_PERSONA_QUESTION = (
+    "Объясни что такое Git rebase и чем он отличается от merge. "
+    "Когда лучше использовать каждый из них?"
+)
+
+# Предустановленные профили для демо
+DEMO_PROFILE_DEVELOPER = UserProfile(
+    name="Алексей",
+    language="русский",
+    style="краткий",
+    format="markdown",
+    expertise="эксперт",
+    domain="backend-разработка",
+    constraints=["не объясняй базовые концепции Git", "только практические советы"],
+)
+
+DEMO_PROFILE_STUDENT = UserProfile(
+    name="Маша",
+    language="русский",
+    style="подробный",
+    format="plain",
+    expertise="начинающий",
+    domain="изучение программирования",
+    constraints=["используй простые аналогии из реальной жизни", "избегай технического жаргона без объяснений"],
+)
+
+
+def _run_demo_persona(agent: Agent) -> None:
+    """Демо персонализации: два профиля, один вопрос, сравнение ответов."""
+    console.print()
+    console.print(
+        "[bold cyan]Demo-Persona запущено.[/bold cyan] "
+        "Демонстрация влияния профиля пользователя на ответы ассистента."
+    )
+    console.print("[dim]Будет выполнено 4 API-запроса: профиль × вопрос + живое переключение.[/dim]\n")
+
+    original_profile_name = agent.memory.get_active_profile_name()
+    results: list[dict[str, object]] = []
+
+    demo_profiles = [
+        ("developer", DEMO_PROFILE_DEVELOPER),
+        ("student", DEMO_PROFILE_STUDENT),
+    ]
+
+    for profile_name, profile in demo_profiles:
+        console.rule(
+            f"[bold]Профиль: «{profile_name}»[/bold]",
+            style="cyan" if profile_name == "developer" else "magenta",
+        )
+        console.print("[dim]Параметры профиля:[/dim]")
+        print_profile(profile, profile_name, active=True)
+
+        console.print("[dim]Системный промпт, который увидит модель:[/dim]")
+        console.print(
+            Panel(
+                profile.build_system_prompt(),
+                border_style="dim",
+                padding=(0, 1),
+            )
+        )
+
+        agent.memory.save_profile(profile_name, profile)
+        agent.memory.switch_profile(profile_name)
+        agent.clear_history()
+
+        console.print(f"\n[bold]Вопрос:[/bold] {DEMO_PERSONA_QUESTION}\n")
+        with console.status(
+            f"[bold cyan]«{profile_name}»: думаю...[/bold cyan]", spinner="dots"
+        ):
+            try:
+                answer, _ = _run_demo_request_with_retry(agent, DEMO_PERSONA_QUESTION)
+            except Exception as e:
+                print_error(f"Ошибка: {e}")
+                _restore_profile(agent, original_profile_name)
+                return
+
+        results.append({"profile": profile_name, "answer": answer})
+        console.print(
+            f"[bold {'cyan' if profile_name == 'developer' else 'magenta'}]"
+            f"Ответ для «{profile_name}»:[/bold {'cyan' if profile_name == 'developer' else 'magenta'}]"
+        )
+        print_llm_response(answer)
+
+    # ── Шаг 3: Живое переключение профилей ───────────────────────────────────
+    console.rule(
+        "[bold yellow]Живое переключение профилей[/bold yellow]"
+    )
+    console.print(
+        "[dim]Теперь покажем переключение в реальном времени: один короткий вопрос,\n"
+        "две смены профиля — ответы меняются автоматически.[/dim]\n"
+    )
+
+    switch_question = "Что такое Docker и зачем он нужен? Ответь в 2-3 предложениях."
+    switch_profiles = [
+        ("developer", DEMO_PROFILE_DEVELOPER, "cyan"),
+        ("student", DEMO_PROFILE_STUDENT, "magenta"),
+    ]
+
+    for profile_name, profile, color in switch_profiles:
+        agent.memory.save_profile(profile_name, profile)
+        agent.memory.switch_profile(profile_name)
+        agent.clear_history()
+
+        console.print(
+            f"[bold {color}]→ /profile switch {profile_name}[/bold {color}] "
+            f"[dim](стиль={profile.style}, уровень={profile.expertise})[/dim]"
+        )
+        console.print(f"[bold]Вопрос:[/bold] {switch_question}")
+
+        with console.status(
+            f"[bold {color}]«{profile_name}»: думаю...[/bold {color}]", spinner="dots"
+        ):
+            try:
+                switch_answer, _ = _run_demo_request_with_retry(agent, switch_question)
+            except Exception as e:
+                print_error(f"Ошибка: {e}")
+                _restore_profile(agent, original_profile_name)
+                return
+
+        console.print(f"[bold {color}]Ответ «{profile_name}»:[/bold {color}]")
+        print_llm_response(switch_answer)
+
+    _restore_profile(agent, original_profile_name)
+    _print_demo_persona_results(results)
+
+
+def _restore_profile(agent: Agent, original_name: str) -> None:
+    if original_name and original_name in agent.memory.list_profiles():
+        try:
+            agent.memory.switch_profile(original_name)
+        except ValueError:
+            agent.memory.deactivate_profile()
+    else:
+        agent.memory.deactivate_profile()
+    agent.clear_history()
+
+
+def _print_demo_persona_results(results: list[dict[str, object]]) -> None:
+    console.rule("[bold cyan]ИТОГ: Demo-Persona[/bold cyan]")
+    console.print()
+
+    table = Table(title="Сравнение профилей", show_lines=True)
+    table.add_column("Параметр", style="bold", min_width=16)
+    table.add_column("developer (эксперт)", style="cyan")
+    table.add_column("student (начинающий)", style="magenta")
+
+    table.add_row("Стиль", "краткий", "подробный")
+    table.add_row("Формат", "markdown", "plain")
+    table.add_row("Уровень", "эксперт", "начинающий")
+    table.add_row("Ограничения", "без основ Git", "аналогии, без жаргона")
+    console.print(table)
+    console.print()
+
+    if len(results) == 2:
+        dev_ans = _one_line(str(results[0]["answer"]))[:300]
+        stu_ans = _one_line(str(results[1]["answer"]))[:300]
+        console.rule("[bold]Краткое сравнение ответов[/bold]", style="dim")
+        console.print(f"[bold cyan]developer:[/bold cyan] {dev_ans}")
+        console.print()
+        console.print(f"[bold magenta]student:[/bold magenta] {stu_ans}")
+        console.print()
+
+    console.print(
+        "[dim]Вывод: один и тот же вопрос — принципиально разные ответы.\n"
+        "Профиль автоматически меняет стиль, глубину и формат без явных инструкций в вопросе.\n"
+        "Используйте /profile new <имя> чтобы создать свой профиль.[/dim]"
+    )
+    console.print()
+
+
+def _handle_task(text: str, agent: Agent) -> None:
+    raw = text.removeprefix("/task").strip()
+    if not raw:
+        wm = agent.memory.working
+        if wm.task:
+            console.print(f"[dim]Текущая задача: {wm.task}[/dim]\n")
+        else:
+            console.print("[dim]Задача не задана. Используйте: /task <описание>[/dim]\n")
+        return
+    if raw.lower() == "clear":
+        agent.memory.clear_working()
+        agent._save_state()
+        console.print("[green]Рабочая память очищена.[/green]\n")
+        return
+    agent.memory.set_task(raw)
+    agent._save_state()
+    console.print(f"[green]Задача установлена:[/green] {raw}\n")
+
+
+def _handle_remember(text: str, agent: Agent) -> None:
+    raw = text.removeprefix("/remember").strip()
+    if not raw:
+        console.print(
+            "[dim]Использование:\n"
+            "  /remember <текст>                      — заметка\n"
+            "  /remember <ключ>=<значение>             — знание\n"
+            "  /remember profile <ключ>=<значение>     — профиль\n"
+            "  /remember decision <текст>              — решение[/dim]\n"
+        )
+        return
+
+    # /remember profile key=value
+    if raw.lower().startswith("profile "):
+        rest = raw[len("profile "):].strip()
+        if "=" in rest:
+            key, _, value = rest.partition("=")
+            if key.strip() and value.strip():
+                agent.memory.remember_profile(key.strip(), value.strip())
+                console.print(
+                    f"[green]Профиль обновлён:[/green] {key.strip()} = {value.strip()}\n"
+                )
+                return
+        print_error("Формат: /remember profile <ключ>=<значение>")
+        return
+
+    # /remember decision <text>
+    if raw.lower().startswith("decision "):
+        decision_text = raw[len("decision "):].strip()
+        if decision_text:
+            agent.memory.remember_decision(decision_text)
+            console.print(f"[green]Решение сохранено:[/green] {decision_text}\n")
+            return
+        print_error("Формат: /remember decision <текст>")
+        return
+
+    # /remember key=value  → knowledge
+    if "=" in raw and not raw.startswith("="):
+        key, _, value = raw.partition("=")
+        if key.strip() and value.strip():
+            agent.memory.remember_knowledge(key.strip(), value.strip())
+            console.print(
+                f"[green]Знание сохранено:[/green] {key.strip()} = {value.strip()}\n"
+            )
+            return
+
+    # /remember <текст>  → note
+    agent.memory.remember_note(raw)
+    console.print(f"[green]Заметка сохранена:[/green] {raw}\n")
+
+
+def _handle_forget(text: str, agent: Agent) -> None:
+    raw = text.removeprefix("/forget").strip()
+    if not raw:
+        console.print("[dim]Использование: /forget <ключ>[/dim]\n")
+        return
+    removed = agent.memory.forget(raw)
+    if removed:
+        console.print(f"[green]Удалено из долговременной памяти:[/green] {raw}\n")
+    else:
+        console.print(
+            f"[yellow]Ключ «{raw}» не найден в knowledge или profile долговременной памяти.[/yellow]\n"
+        )
 
 
 def _generate_large_prompt(target_tokens: int) -> str:

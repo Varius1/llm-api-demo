@@ -7,6 +7,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+from .memory import MemoryManager, UserProfile
 from .models import BenchmarkResult, BranchInfo, ChatTurnStats, ModelConfig, StrategyType
 from .strategy import STRATEGY_LABELS
 
@@ -25,6 +26,19 @@ def print_welcome(model: str, temperature: float | None) -> None:
             "  [yellow]/branch save [имя][/yellow] / [yellow]/branch switch <имя>[/yellow] / [yellow]/branch list[/yellow] — ветки\n"
             "  [yellow]/facts[/yellow] — показать KV-память (стратегия facts)\n"
             "  [yellow]/compress on|off[/yellow] — включить/выключить summary-сжатие\n"
+            "  [bold cyan]Профиль и персонализация:[/bold cyan]\n"
+            "  [yellow]/profile[/yellow] — показать активный профиль\n"
+            "  [yellow]/profile new <имя>[/yellow] — создать профиль  |  [yellow]/profile switch <имя>[/yellow] — переключить\n"
+            "  [yellow]/profile set <поле> <значение>[/yellow] — изменить поле  |  [yellow]/profile list[/yellow] — все профили\n"
+            "  [yellow]/profile delete <имя>[/yellow] — удалить  |  [yellow]/profile reset[/yellow] — отключить профиль\n"
+            "  [bold cyan]Модель памяти:[/bold cyan]\n"
+            "  [yellow]/memory[/yellow] — показать все 3 слоя памяти\n"
+            "  [yellow]/task <описание>[/yellow] — задать задачу в рабочей памяти  |  [yellow]/task clear[/yellow] — очистить\n"
+            "  [yellow]/remember <текст>[/yellow] — заметка в долговременную память\n"
+            "  [yellow]/remember <ключ>=<значение>[/yellow] — знание  |  [yellow]/remember profile <ключ>=<значение>[/yellow]\n"
+            "  [yellow]/forget <ключ>[/yellow] — удалить из долговременной памяти\n"
+            "  [yellow]/demo-persona[/yellow] — демо профилей: developer vs student, сравнение ответов\n"
+            "  [yellow]/demo-memory[/yellow] — демо 3 слоёв памяти: хранение, влияние на ответы\n"
             "  [yellow]/demo-strategies[/yellow] — сравнение 3 стратегий\n"
             "  [yellow]/demo-branch[/yellow] — демо веток: общий старт → 2 ветки → сравнение\n"
             "  [yellow]/demo-compare[/yellow] — сравнение off/on summary\n"
@@ -294,6 +308,164 @@ def print_judge_header(judge_name: str, judge_id: str) -> None:
         )
     )
     console.print(f"  Судья: [bold]{judge_name}[/bold] ({judge_id})")
+    console.print()
+
+
+def print_memory_state(
+    memory: MemoryManager,
+    recent_messages: list[object],
+    keep_last_n: int = 3,
+) -> None:
+    """Отобразить все 3 слоя памяти в виде панелей."""
+    from .models import ChatMessage  # локальный импорт для избежания цикла
+
+    console.print()
+
+    # ── Краткосрочная память ──────────────────────────────────────────────────
+    dialog = [m for m in recent_messages if isinstance(m, ChatMessage) and m.role != "system"]
+    tail = dialog[-keep_last_n:] if dialog else []
+    if tail:
+        lines = []
+        for msg in tail:
+            role_label = "[bold yellow]Вы[/bold yellow]" if msg.role == "user" else "[bold green]LLM[/bold green]"
+            snippet = " ".join(msg.content.split())[:120]
+            if len(msg.content) > 120:
+                snippet += "..."
+            lines.append(f"{role_label}: {snippet}")
+        short_term_text = "\n".join(lines)
+    else:
+        short_term_text = "[dim]Диалог пуст[/dim]"
+
+    console.print(
+        Panel(
+            short_term_text,
+            title="[bold]Краткосрочная память[/bold] (последние сообщения текущего диалога)",
+            border_style="yellow",
+            padding=(0, 1),
+        )
+    )
+
+    # ── Рабочая память ────────────────────────────────────────────────────────
+    wm = memory.working
+    if wm.is_empty():
+        working_text = "[dim]Пусто. Используйте /task <описание> для установки задачи.[/dim]"
+    else:
+        wlines = []
+        if wm.task:
+            wlines.append(f"[bold]Задача:[/bold] {wm.task}")
+        if wm.facts:
+            facts_str = ", ".join(f"[cyan]{k}[/cyan]={v}" for k, v in wm.facts.items())
+            wlines.append(f"[bold]Факты:[/bold] {facts_str}")
+        if wm.goals:
+            wlines.append("[bold]Цели:[/bold]")
+            for i, g in enumerate(wm.goals, 1):
+                wlines.append(f"  {i}. {g}")
+        if wm.notes:
+            wlines.append("[bold]Заметки:[/bold]")
+            for note in wm.notes:
+                wlines.append(f"  • {note}")
+        working_text = "\n".join(wlines)
+    console.print(
+        Panel(
+            working_text,
+            title="[bold]Рабочая память[/bold] (данные текущей задачи, очищается при /clear)",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+
+    # ── Долговременная память ─────────────────────────────────────────────────
+    lt = memory.long_term
+    if lt.is_empty():
+        lt_text = (
+            "[dim]Пусто. Используйте /remember для сохранения знаний и профиля.[/dim]"
+        )
+    else:
+        ltlines = []
+        if lt.profile:
+            ltlines.append("[bold]Профиль:[/bold]")
+            for k, v in lt.profile.items():
+                ltlines.append(f"  [cyan]{k}[/cyan]: {v}")
+        if lt.knowledge:
+            ltlines.append("[bold]Знания:[/bold]")
+            for k, v in lt.knowledge.items():
+                ltlines.append(f"  [cyan]{k}[/cyan]: {v}")
+        if lt.decisions:
+            ltlines.append("[bold]Решения:[/bold]")
+            for d in lt.decisions[-5:]:
+                ltlines.append(f"  [{d.timestamp}] {d.text}")
+        if lt.notes:
+            ltlines.append("[bold]Заметки:[/bold]")
+            for note in lt.notes[-5:]:
+                ltlines.append(f"  • {note}")
+        if lt.updated_at:
+            ltlines.append(f"\n[dim]Обновлено: {lt.updated_at}[/dim]")
+        lt_text = "\n".join(ltlines)
+    console.print(
+        Panel(
+            lt_text,
+            title="[bold]Долговременная память[/bold] (профиль и знания, НЕ очищается при /clear)",
+            border_style="magenta",
+            padding=(0, 1),
+        )
+    )
+    console.print()
+
+
+def print_profile(profile: UserProfile, name: str, *, active: bool = True) -> None:
+    """Показать поля профиля пользователя в Rich-панели."""
+    lines: list[str] = []
+    field_map = [
+        ("Имя", profile.name or "[dim](не задано)[/dim]"),
+        ("Язык", profile.language),
+        ("Стиль", profile.style),
+        ("Формат", profile.format),
+        ("Уровень", profile.expertise),
+        ("Область", profile.domain or "[dim](не задано)[/dim]"),
+    ]
+    for label, value in field_map:
+        lines.append(f"  [cyan]{label}:[/cyan] {value}")
+    if profile.constraints:
+        lines.append("  [cyan]Ограничения:[/cyan]")
+        for c in profile.constraints:
+            lines.append(f"    • {c}")
+    active_mark = " [bold green](активный)[/bold green]" if active else ""
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title=f"[bold]Профиль: {name}[/bold]{active_mark}",
+            border_style="green" if active else "dim",
+            padding=(0, 1),
+        )
+    )
+
+
+def print_profile_list(
+    profiles: dict[str, UserProfile], active_name: str
+) -> None:
+    """Показать таблицу всех профилей."""
+    if not profiles:
+        console.print("[dim]Профили не созданы. Используйте /profile new <имя>[/dim]\n")
+        return
+    table = Table(title="Профили пользователя", show_lines=True)
+    table.add_column("Имя", style="bold")
+    table.add_column("Стиль")
+    table.add_column("Формат")
+    table.add_column("Уровень")
+    table.add_column("Область")
+    table.add_column("Активный", justify="center")
+    for name, profile in profiles.items():
+        is_active = "✓" if name == active_name else ""
+        table.add_row(
+            name,
+            profile.style,
+            profile.format,
+            profile.expertise,
+            profile.domain or "—",
+            is_active,
+        )
+    console.print()
+    console.print(table)
     console.print()
 
 
