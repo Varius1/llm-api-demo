@@ -21,6 +21,7 @@ from .display import (
     print_profile,
     print_profile_list,
     print_strategy_status,
+    print_task_fsm,
     print_welcome,
 )
 from .memory import PROFILE_EXPERTISE_OPTIONS, PROFILE_FORMAT_OPTIONS, PROFILE_STYLE_OPTIONS, UserProfile
@@ -141,6 +142,10 @@ def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
 
         if text == "/demo-persona":
             _run_demo_persona(agent)
+            continue
+
+        if text == "/demo-fsm":
+            _run_demo_fsm(agent)
             continue
 
         if text.startswith("/task"):
@@ -1466,19 +1471,140 @@ def _handle_task(text: str, agent: Agent) -> None:
     raw = text.removeprefix("/task").strip()
     if not raw:
         wm = agent.memory.working
-        if wm.task:
+        if wm.task_fsm is not None:
+            print_task_fsm(wm.task_fsm)
+        elif wm.task:
             console.print(f"[dim]Текущая задача: {wm.task}[/dim]\n")
         else:
-            console.print("[dim]Задача не задана. Используйте: /task <описание>[/dim]\n")
+            console.print(
+                "[dim]Задача не задана.\n"
+                "  /task <описание>             — задать текст задачи\n"
+                "  /task fsm start <имя>        — запустить Task FSM[/dim]\n"
+            )
         return
     if raw.lower() == "clear":
         agent.memory.clear_working()
         agent._save_state()
         console.print("[green]Рабочая память очищена.[/green]\n")
         return
+
+    # ── FSM-подкоманды (/task fsm ...) ───────────────────────────────────────
+    if raw.lower().startswith("fsm"):
+        _handle_task_fsm(raw[3:].strip(), agent)
+        return
+
     agent.memory.set_task(raw)
     agent._save_state()
     console.print(f"[green]Задача установлена:[/green] {raw}\n")
+
+
+def _handle_task_fsm(raw: str, agent: Agent) -> None:
+    """Обработчик подкоманд /task fsm ..."""
+    parts = raw.split(maxsplit=1)
+    sub = parts[0].lower() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    mem = agent.memory
+
+    # /task fsm  (без подкоманды) → показать статус
+    if not sub or sub == "status":
+        fsm = mem.get_fsm()
+        if fsm is None:
+            console.print(
+                "[dim]FSM не активен. Запустите: /task fsm start <имя задачи>[/dim]\n"
+            )
+        else:
+            print_task_fsm(fsm)
+        return
+
+    # /task fsm start <имя>
+    if sub == "start":
+        if not rest:
+            print_error("Использование: /task fsm start <имя задачи>")
+            return
+        fsm = mem.start_fsm(rest)
+        agent._save_state()
+        console.print(f"[green]FSM запущен:[/green] «{fsm.task_name}» → этап [yellow]Планирование[/yellow]\n")
+        print_task_fsm(fsm)
+        return
+
+    # /task fsm next [заметка]
+    if sub == "next":
+        try:
+            fsm = mem.advance_fsm(note=rest)
+            agent._save_state()
+            from .task_fsm import STAGE_LABELS as FSM_STAGE_LABELS  # noqa: PLC0415
+            label = FSM_STAGE_LABELS[fsm.stage]
+            console.print(f"[green]Переход выполнен → этап [bold]{label}[/bold][/green]\n")
+            print_task_fsm(fsm)
+        except ValueError as e:
+            print_error(str(e))
+        return
+
+    # /task fsm pause
+    if sub == "pause":
+        try:
+            fsm = mem.pause_fsm()
+            agent._save_state()
+            console.print("[yellow]FSM поставлен на паузу.[/yellow] Агент отвечает свободно.\n")
+            print_task_fsm(fsm)
+        except ValueError as e:
+            print_error(str(e))
+        return
+
+    # /task fsm resume
+    if sub == "resume":
+        try:
+            fsm = mem.resume_fsm()
+            agent._save_state()
+            from .task_fsm import STAGE_LABELS as FSM_STAGE_LABELS  # noqa: PLC0415
+            label = FSM_STAGE_LABELS[fsm.stage]
+            console.print(f"[green]FSM возобновлён → этап [bold]{label}[/bold][/green]\n")
+            print_task_fsm(fsm)
+        except ValueError as e:
+            print_error(str(e))
+        return
+
+    # /task fsm step <описание>
+    if sub == "step":
+        if not rest:
+            print_error("Использование: /task fsm step <описание текущего шага>")
+            return
+        try:
+            mem.set_fsm_step(rest)
+            agent._save_state()
+            console.print(f"[green]Шаг установлен:[/green] {rest}\n")
+        except ValueError as e:
+            print_error(str(e))
+        return
+
+    # /task fsm artifact <ключ> <текст>
+    if sub == "artifact":
+        art_parts = rest.split(maxsplit=1)
+        if len(art_parts) < 2:
+            print_error("Использование: /task fsm artifact <ключ> <текст>")
+            return
+        try:
+            fsm = mem.add_fsm_artifact(art_parts[0], art_parts[1])
+            agent._save_state()
+            console.print(
+                f"[green]Артефакт сохранён:[/green] [cyan]{art_parts[0]}[/cyan] = {art_parts[1][:60]}\n"
+            )
+        except ValueError as e:
+            print_error(str(e))
+        return
+
+    # /task fsm clear
+    if sub == "clear":
+        mem.clear_fsm()
+        agent._save_state()
+        console.print("[yellow]FSM сброшен.[/yellow]\n")
+        return
+
+    print_error(
+        f"Неизвестная FSM-подкоманда: «{sub}».\n"
+        "Доступные: start, status, next, pause, resume, step, artifact, clear"
+    )
 
 
 def _handle_remember(text: str, agent: Agent) -> None:
@@ -1573,3 +1699,314 @@ def _looks_like_context_overflow(error_text: str) -> bool:
         "input too long",
     )
     return any(key in normalized for key in keywords)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Demo: Task FSM
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Тема задачи для всего демо-сценария
+_DEMO_FSM_TASK = "Реализовать REST-эндпоинт для экспорта отчёта в PDF"
+
+# Один вопрос, который задаётся в каждом этапе — чтобы было чётко видно
+# как ОДНА и та же фраза получает разный ответ в зависимости от stage-промпта
+_DEMO_FSM_PROBE = (
+    "Что мне сделать прямо сейчас по задаче «{}»? "
+    "Дай конкретный следующий шаг в 2-3 предложениях."
+)
+
+
+def _run_demo_fsm(agent: Agent) -> None:
+    """Демо Task FSM: planning→execution→validation→done, пауза/возобновление."""
+    from .task_fsm import STAGE_SYSTEM_PROMPTS, TaskStage
+
+    console.print()
+    console.print(
+        "[bold cyan]Demo-FSM запущено.[/bold cyan] "
+        "Демонстрация детерминированного конечного автомата задачи."
+    )
+    console.print(
+        "[dim]Жизненный цикл: planning → execution → validation → done\n"
+        "Один и тот же вопрос — принципиально разные ответы в каждом этапе.\n"
+        "Будет выполнено ~6 API-запросов. Нажмите Ctrl+C для отмены.[/dim]\n"
+    )
+
+    # Сохраняем исходное состояние, чтобы восстановить после демо
+    original_fsm = agent.memory.get_fsm()
+    original_task = agent.memory.working.task
+
+    agent.clear_history()
+    agent.memory.clear_fsm()
+    agent._save_state()
+
+    results: list[dict[str, object]] = []
+
+    def _ask_probe(stage_label: str) -> str | None:
+        question = _DEMO_FSM_PROBE.format(_DEMO_FSM_TASK)
+        console.print(f"\n[bold]Вопрос:[/bold] {question}\n")
+        with console.status(
+            f"[bold cyan]{stage_label}: думаю...[/bold cyan]", spinner="dots"
+        ):
+            try:
+                answer, _ = _run_demo_request_with_retry(agent, question)
+                return answer
+            except Exception as e:
+                print_error(f"Ошибка API: {e}")
+                return None
+
+    # ── Шаг 1: Запускаем FSM ─────────────────────────────────────────────────
+    console.rule("[bold yellow]Шаг 1: Запуск FSM (/task fsm start)[/bold yellow]")
+    console.print(
+        "[dim]Запускаем FSM. Этап PLANNING — агент помогает планировать,\n"
+        "не начиная реализацию. Ниже показан stage-промпт, который\n"
+        "будет автоматически добавлен к каждому запросу LLM:[/dim]\n"
+    )
+    fsm = agent.memory.start_fsm(_DEMO_FSM_TASK)
+    agent._save_state()
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.PLANNING],
+            title="[dim]system-промпт этапа PLANNING[/dim]",
+            border_style="dim",
+            padding=(0, 1),
+        )
+    )
+    print_task_fsm(fsm)
+
+    # Вопрос на этапе PLANNING
+    console.rule("[bold yellow]Этап PLANNING → вопрос агенту[/bold yellow]")
+    console.print(
+        "[dim]Смотрим как агент отвечает в режиме планирования.[/dim]"
+    )
+    fsm.set_step("Формулировка требований", "Определить входные параметры и формат вывода")
+    agent._save_state()
+    answer_planning = _ask_probe("planning")
+    if answer_planning is None:
+        _restore_demo_fsm(agent, original_fsm, original_task)
+        return
+    results.append({"stage": "planning", "answer": answer_planning})
+    print_llm_response(answer_planning)
+
+    # Сохраняем артефакт этапа
+    agent.memory.add_fsm_artifact(
+        "план",
+        "Эндпоинт GET /reports/{id}/export, параметры: format=pdf, locale, date_range",
+    )
+    agent._save_state()
+    console.print("[dim]→ /task fsm artifact план «Эндпоинт GET /reports/{id}/export…»[/dim]\n")
+
+    # ── Шаг 2: Переход в EXECUTION ────────────────────────────────────────────
+    console.rule("[bold cyan]Шаг 2: Переход в EXECUTION (/task fsm next)[/bold cyan]")
+    console.print(
+        "[dim]Переходим к реализации. Stage-промпт меняется:\n"
+        "теперь агент фокусируется на конкретных действиях по плану.[/dim]\n"
+    )
+    try:
+        fsm = agent.memory.advance_fsm("план утверждён")
+    except ValueError as e:
+        print_error(str(e))
+        _restore_demo_fsm(agent, original_fsm, original_task)
+        return
+    agent._save_state()
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.EXECUTION],
+            title="[dim]system-промпт этапа EXECUTION[/dim]",
+            border_style="dim",
+            padding=(0, 1),
+        )
+    )
+    print_task_fsm(fsm)
+
+    console.rule("[bold cyan]Этап EXECUTION → тот же вопрос[/bold cyan]")
+    console.print(
+        "[dim]Тот же вопрос — но агент теперь в режиме реализации.[/dim]"
+    )
+    fsm.set_step("Написать обработчик эндпоинта", "Сгенерировать PDF через библиотеку")
+    agent._save_state()
+    answer_execution = _ask_probe("execution")
+    if answer_execution is None:
+        _restore_demo_fsm(agent, original_fsm, original_task)
+        return
+    results.append({"stage": "execution", "answer": answer_execution})
+    print_llm_response(answer_execution)
+
+    # ── Шаг 3: ПАУЗА ─────────────────────────────────────────────────────────
+    console.rule("[bold magenta]Шаг 3: Пауза (/task fsm pause)[/bold magenta]")
+    console.print(
+        "[dim]Ставим задачу на паузу — пришёл срочный вопрос не по теме.\n"
+        "Stage-промпт убирается: LLM отвечает свободно, без ограничений этапа.[/dim]\n"
+    )
+    try:
+        fsm = agent.memory.pause_fsm()
+    except ValueError as e:
+        print_error(str(e))
+        _restore_demo_fsm(agent, original_fsm, original_task)
+        return
+    agent._save_state()
+    print_task_fsm(fsm)
+
+    pause_question = "Что такое JWT токен и зачем он нужен? Ответь в 2 предложениях."
+    console.print(f"[bold]Посторонний вопрос:[/bold] {pause_question}\n")
+    with console.status("[bold magenta]пауза: думаю...[/bold magenta]", spinner="dots"):
+        try:
+            answer_pause, _ = _run_demo_request_with_retry(agent, pause_question)
+        except Exception as e:
+            print_error(f"Ошибка API: {e}")
+            _restore_demo_fsm(agent, original_fsm, original_task)
+            return
+    console.print("[bold magenta]Ответ (пауза, агент свободен):[/bold magenta]")
+    print_llm_response(answer_pause)
+    console.print(
+        "[dim]Агент ответил без каких-либо FSM-ограничений.\n"
+        "Состояние задачи сохранено — продолжим с того же места.[/dim]\n"
+    )
+
+    # ── Шаг 4: ВОЗОБНОВЛЕНИЕ ─────────────────────────────────────────────────
+    console.rule("[bold cyan]Шаг 4: Возобновление (/task fsm resume)[/bold cyan]")
+    console.print(
+        "[dim]Возобновляем задачу. Stage-промпт EXECUTION возвращается автоматически.\n"
+        "Не нужно ничего объяснять заново — контекст сохранён в FSM.[/dim]\n"
+    )
+    try:
+        fsm = agent.memory.resume_fsm()
+    except ValueError as e:
+        print_error(str(e))
+        _restore_demo_fsm(agent, original_fsm, original_task)
+        return
+    agent._save_state()
+    print_task_fsm(fsm)
+
+    console.rule("[bold cyan]После resume → тот же вопрос снова[/bold cyan]")
+    console.print(
+        "[dim]Тот же вопрос сразу после resume: агент снова в режиме EXECUTION.[/dim]"
+    )
+    answer_resumed = _ask_probe("execution (после resume)")
+    if answer_resumed is None:
+        _restore_demo_fsm(agent, original_fsm, original_task)
+        return
+    results.append({"stage": "execution_resumed", "answer": answer_resumed})
+    print_llm_response(answer_resumed)
+
+    # ── Шаг 5: Переход в VALIDATION ──────────────────────────────────────────
+    console.rule("[bold green]Шаг 5: Переход в VALIDATION (/task fsm next)[/bold green]")
+    console.print(
+        "[dim]Реализация готова. Переходим в режим валидации — агент должен\n"
+        "критически проверить результат и дать вердикт.[/dim]\n"
+    )
+    try:
+        fsm = agent.memory.advance_fsm("реализация завершена")
+    except ValueError as e:
+        print_error(str(e))
+        _restore_demo_fsm(agent, original_fsm, original_task)
+        return
+    agent._save_state()
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.VALIDATION],
+            title="[dim]system-промпт этапа VALIDATION[/dim]",
+            border_style="dim",
+            padding=(0, 1),
+        )
+    )
+    print_task_fsm(fsm)
+
+    console.rule("[bold green]Этап VALIDATION → тот же вопрос[/bold green]")
+    console.print("[dim]Тот же вопрос — агент в режиме проверки.[/dim]")
+    fsm.set_step("Проверка артефактов", "Вынести вердикт: принять / доработать / отклонить")
+    agent._save_state()
+    answer_validation = _ask_probe("validation")
+    if answer_validation is None:
+        _restore_demo_fsm(agent, original_fsm, original_task)
+        return
+    results.append({"stage": "validation", "answer": answer_validation})
+    print_llm_response(answer_validation)
+
+    # Сохраняем артефакт валидации
+    agent.memory.add_fsm_artifact("вердикт", "принять — базовая реализация готова к ревью")
+    agent._save_state()
+    console.print("[dim]→ /task fsm artifact вердикт «принять — базовая реализация…»[/dim]\n")
+
+    # ── Шаг 6: DONE ───────────────────────────────────────────────────────────
+    console.rule("[bold green]Шаг 6: Завершение (/task fsm next → done)[/bold green]")
+    try:
+        fsm = agent.memory.advance_fsm("валидация пройдена")
+    except ValueError as e:
+        print_error(str(e))
+        _restore_demo_fsm(agent, original_fsm, original_task)
+        return
+    agent._save_state()
+    print_task_fsm(fsm)
+    console.print("[green]Задача завершена. Stage-промпт больше не инжектируется.[/green]\n")
+
+    # ── Итоговая таблица ──────────────────────────────────────────────────────
+    _print_demo_fsm_summary(results)
+
+    _restore_demo_fsm(agent, original_fsm, original_task)
+
+
+def _restore_demo_fsm(agent: Agent, original_fsm: object, original_task: str) -> None:
+    """Восстановить состояние после демо."""
+    from .task_fsm import TaskFSM
+    agent.memory.clear_fsm()
+    if original_fsm is not None and isinstance(original_fsm, TaskFSM):
+        agent.memory.working.task_fsm = original_fsm
+    if original_task:
+        agent.memory.set_task(original_task)
+    agent.clear_history()
+    agent._save_state()
+
+
+def _print_demo_fsm_summary(results: list[dict[str, object]]) -> None:
+    """Итоговая таблица сравнения ответов по этапам."""
+    console.rule("[bold cyan]ИТОГ: Demo-FSM[/bold cyan]")
+    console.print()
+
+    stage_colors = {
+        "planning": "yellow",
+        "execution": "cyan",
+        "execution_resumed": "cyan",
+        "validation": "green",
+    }
+    stage_labels = {
+        "planning": "Планирование",
+        "execution": "Реализация",
+        "execution_resumed": "Реализация (после resume)",
+        "validation": "Валидация",
+    }
+
+    table = Table(title="Один вопрос — разные этапы — разные ответы", show_lines=True)
+    table.add_column("Этап", style="bold", min_width=24)
+    table.add_column("Фокус агента")
+    table.add_column("Краткий ответ", min_width=40)
+
+    for r in results:
+        stage = str(r["stage"])
+        answer = _one_line(str(r["answer"]))[:200]
+        color = stage_colors.get(stage, "white")
+        label = stage_labels.get(stage, stage)
+        focus_map = {
+            "planning": "требования, шаги, риски",
+            "execution": "конкретные действия, код",
+            "execution_resumed": "продолжение реализации",
+            "validation": "проверка, вердикт",
+        }
+        table.add_row(
+            f"[{color}]{label}[/{color}]",
+            focus_map.get(stage, "—"),
+            answer,
+        )
+
+    console.print(table)
+    console.print()
+    console.print(
+        "[dim]Вывод: stage-промпт меняет роль агента на каждом этапе без изменения вопроса.\n"
+        "Переходы детерминированы — LLM не решает когда переключаться, это делает пользователь.\n"
+        "Пауза/resume сохраняет этап и контекст — продолжение без повторных объяснений.\n\n"
+        "Команды для ручного использования:\n"
+        "  /task fsm start <имя>     — запустить\n"
+        "  /task fsm next            — следующий этап\n"
+        "  /task fsm pause / resume  — пауза и возобновление\n"
+        "  /task fsm status          — текущее состояние[/dim]"
+    )
+    console.print()

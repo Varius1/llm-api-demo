@@ -10,6 +10,7 @@ from rich.table import Table
 from .memory import MemoryManager, UserProfile
 from .models import BenchmarkResult, BranchInfo, ChatTurnStats, ModelConfig, StrategyType
 from .strategy import STRATEGY_LABELS
+from .task_fsm import STAGE_CHAIN, STAGE_LABELS as FSM_STAGE_LABELS, TaskFSM, TaskStage
 
 console = Console()
 
@@ -31,6 +32,13 @@ def print_welcome(model: str, temperature: float | None) -> None:
             "  [yellow]/profile new <имя>[/yellow] — создать профиль  |  [yellow]/profile switch <имя>[/yellow] — переключить\n"
             "  [yellow]/profile set <поле> <значение>[/yellow] — изменить поле  |  [yellow]/profile list[/yellow] — все профили\n"
             "  [yellow]/profile delete <имя>[/yellow] — удалить  |  [yellow]/profile reset[/yellow] — отключить профиль\n"
+            "  [bold cyan]Task FSM (конечный автомат задачи):[/bold cyan]\n"
+            "  [yellow]/task fsm start <имя>[/yellow] — запустить задачу (planning → execution → validation → done)\n"
+            "  [yellow]/task fsm next [заметка][/yellow] — перейти к следующему этапу\n"
+            "  [yellow]/task fsm pause[/yellow] — пауза (LLM отвечает свободно)  |  [yellow]/task fsm resume[/yellow] — возобновить\n"
+            "  [yellow]/task fsm step <шаг>[/yellow] — текущий шаг  |  [yellow]/task fsm artifact <ключ> <текст>[/yellow] — артефакт\n"
+            "  [yellow]/task fsm status[/yellow] — состояние FSM  |  [yellow]/task fsm clear[/yellow] — сброс\n"
+            "  [yellow]/demo-fsm[/yellow] — автодемо: planning→execution→pause/resume→validation→done\n"
             "  [bold cyan]Модель памяти:[/bold cyan]\n"
             "  [yellow]/memory[/yellow] — показать все 3 слоя памяти\n"
             "  [yellow]/task <описание>[/yellow] — задать задачу в рабочей памяти  |  [yellow]/task clear[/yellow] — очистить\n"
@@ -493,4 +501,85 @@ def print_judge_verdict(
             f"{usage_completion} выход = {usage_total}"
         )
     console.print(f"  [bold]Стоимость оценки:[/bold] [green]${cost:.6f}[/green]")
+    console.print()
+
+
+def print_task_fsm(fsm: TaskFSM) -> None:
+    """Показать состояние FSM задачи в Rich-панели."""
+    stage_colors: dict[TaskStage, str] = {
+        TaskStage.PLANNING: "yellow",
+        TaskStage.EXECUTION: "cyan",
+        TaskStage.VALIDATION: "magenta",
+        TaskStage.DONE: "green",
+        TaskStage.PAUSED: "dim",
+    }
+
+    # ── Прогресс-строка этапов ────────────────────────────────────────────────
+    progress_parts: list[str] = []
+    for stage in STAGE_CHAIN:
+        label = FSM_STAGE_LABELS[stage]
+        color = stage_colors[stage]
+        if fsm.stage == TaskStage.PAUSED and fsm.paused_at == stage.value:
+            progress_parts.append(f"[bold {color}][{label} ⏸][/bold {color}]")
+        elif stage == fsm.stage:
+            progress_parts.append(f"[bold {color}][{label} ←][/bold {color}]")
+        elif STAGE_CHAIN.index(stage) < (
+            STAGE_CHAIN.index(fsm.stage)
+            if fsm.stage in STAGE_CHAIN
+            else len(STAGE_CHAIN)
+        ):
+            progress_parts.append(f"[{color}]✓ {label}[/{color}]")
+        else:
+            progress_parts.append(f"[dim]{label}[/dim]")
+    progress_line = "  →  ".join(progress_parts)
+
+    # ── Основная информация ───────────────────────────────────────────────────
+    active_label = FSM_STAGE_LABELS[fsm.stage]
+    active_color = stage_colors.get(fsm.stage, "white")
+    lines: list[str] = [
+        progress_line,
+        "",
+        f"[bold]Задача:[/bold] {fsm.task_name or '—'}",
+        f"[bold]Этап:[/bold] [{active_color}]{active_label}[/{active_color}]",
+    ]
+    if fsm.stage == TaskStage.PAUSED and fsm.paused_at:
+        paused_label = FSM_STAGE_LABELS.get(TaskStage(fsm.paused_at), fsm.paused_at)
+        lines.append(f"[bold]Приостановлено на:[/bold] [dim]{paused_label}[/dim]")
+    if fsm.current_step:
+        lines.append(f"[bold]Текущий шаг:[/bold] {fsm.current_step}")
+    if fsm.expected_action:
+        lines.append(f"[bold]Ожидается:[/bold] {fsm.expected_action}")
+    if fsm.created_at:
+        lines.append(f"[dim]Создано: {fsm.created_at}[/dim]")
+
+    # ── Артефакты ─────────────────────────────────────────────────────────────
+    if fsm.artifacts:
+        lines.append("")
+        lines.append("[bold]Артефакты:[/bold]")
+        for key, text in fsm.artifacts.items():
+            preview = text[:80] + ("…" if len(text) > 80 else "")
+            lines.append(f"  [cyan]{key}[/cyan]: {preview}")
+
+    # ── История переходов ─────────────────────────────────────────────────────
+    if fsm.transitions:
+        lines.append("")
+        lines.append("[bold]История переходов:[/bold]")
+        for tr in fsm.transitions[-4:]:
+            from_label = FSM_STAGE_LABELS.get(TaskStage(tr.from_stage), tr.from_stage)
+            to_label = FSM_STAGE_LABELS.get(TaskStage(tr.to_stage), tr.to_stage)
+            note_str = f" — {tr.note}" if tr.note else ""
+            lines.append(
+                f"  [dim]{tr.timestamp}[/dim]  {from_label} → {to_label}{note_str}"
+            )
+
+    title_color = active_color
+    console.print()
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title=f"[bold {title_color}]Task FSM: {fsm.task_name or 'задача'}[/bold {title_color}]",
+            border_style=title_color,
+            padding=(0, 1),
+        )
+    )
     console.print()

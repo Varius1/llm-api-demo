@@ -10,6 +10,8 @@ from pathlib import Path
 from platformdirs import user_config_dir
 from pydantic import BaseModel, Field
 
+from .task_fsm import TaskFSM, TaskStage
+
 APP_NAME = "llm-cli"
 LONG_TERM_FILENAME = "long_term_memory.json"
 
@@ -35,6 +37,7 @@ class WorkingMemory(BaseModel):
     goals: list[str] = Field(default_factory=list)
     facts: dict[str, str] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
+    task_fsm: TaskFSM | None = None
 
     def is_empty(self) -> bool:
         return not self.task and not self.goals and not self.facts and not self.notes
@@ -341,6 +344,62 @@ class MemoryManager:
             return ""
         return profile.build_system_prompt()
 
+    # ── Управление FSM задачи ─────────────────────────────────────────────────
+
+    def start_fsm(self, task_name: str) -> TaskFSM:
+        """Запустить новый FSM в этапе planning."""
+        fsm = TaskFSM(
+            task_name=task_name.strip(),
+            stage=TaskStage.PLANNING,
+            created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        )
+        self._working.task_fsm = fsm
+        return fsm
+
+    def get_fsm(self) -> TaskFSM | None:
+        """Вернуть текущий FSM или None если не активен."""
+        return self._working.task_fsm
+
+    def advance_fsm(self, note: str = "") -> TaskFSM:
+        """Перейти к следующему этапу FSM."""
+        fsm = self._require_fsm()
+        fsm.advance(note)
+        return fsm
+
+    def pause_fsm(self) -> TaskFSM:
+        """Поставить FSM на паузу."""
+        fsm = self._require_fsm()
+        fsm.pause()
+        return fsm
+
+    def resume_fsm(self) -> TaskFSM:
+        """Возобновить FSM с сохранённого этапа."""
+        fsm = self._require_fsm()
+        fsm.resume()
+        return fsm
+
+    def add_fsm_artifact(self, key: str, text: str) -> TaskFSM:
+        """Добавить артефакт к текущему этапу FSM."""
+        fsm = self._require_fsm()
+        fsm.add_artifact(key, text)
+        return fsm
+
+    def set_fsm_step(self, step: str, expected_action: str = "") -> None:
+        """Установить текущий шаг и ожидаемое действие внутри этапа FSM."""
+        fsm = self._require_fsm()
+        fsm.set_step(step, expected_action)
+
+    def clear_fsm(self) -> None:
+        """Сбросить FSM (удалить из рабочей памяти)."""
+        self._working.task_fsm = None
+
+    def _require_fsm(self) -> TaskFSM:
+        if self._working.task_fsm is None:
+            raise ValueError(
+                "FSM не активен. Запустите задачу командой: /task fsm start <имя>"
+            )
+        return self._working.task_fsm
+
     # ── Инъекция в запрос ─────────────────────────────────────────────────────
 
     def build_context_block(self) -> str:
@@ -383,6 +442,12 @@ class MemoryManager:
             if self._long_term.notes:
                 for note in self._long_term.notes[-3:]:
                     lines.append(f"Заметка: {note}")
+
+        # FSM-статус задачи
+        if self._working.task_fsm is not None:
+            if lines:
+                lines.append("")
+            lines.append(self._working.task_fsm.build_status_block())
 
         if not lines:
             return ""

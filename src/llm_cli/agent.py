@@ -338,6 +338,14 @@ class Agent:
         if memory_block:
             messages = _inject_memory_block(messages, memory_block)
 
+        # Инъекция stage-промпта FSM — последним, чтобы этап задачи был ближе к диалогу.
+        # При паузе или завершении build_stage_prompt() возвращает пустую строку.
+        fsm = self._memory.get_fsm()
+        if fsm:
+            stage_prompt = fsm.build_stage_prompt()
+            if stage_prompt:
+                messages = _inject_memory_block(messages, stage_prompt)
+
         return messages, meta
 
     def _build_sliding_window_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
