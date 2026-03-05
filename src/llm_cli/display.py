@@ -7,6 +7,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+from .invariants import CATEGORY_LABELS, InvariantManager
 from .memory import MemoryManager, UserProfile
 from .models import BenchmarkResult, BranchInfo, ChatTurnStats, ModelConfig, StrategyType
 from .strategy import STRATEGY_LABELS
@@ -50,6 +51,11 @@ def print_welcome(model: str, temperature: float | None) -> None:
             "  [yellow]/demo-strategies[/yellow] — сравнение 3 стратегий\n"
             "  [yellow]/demo-branch[/yellow] — демо веток: общий старт → 2 ветки → сравнение\n"
             "  [yellow]/demo-compare[/yellow] — сравнение off/on summary\n"
+            "  [bold cyan]Инварианты (неизменяемые правила проекта):[/bold cyan]\n"
+            "  [yellow]/invariants[/yellow] — показать все инварианты\n"
+            "  [yellow]/invariant-add <кат> <название> | <описание>[/yellow] — добавить  |  [yellow]/invariant-del <ID>[/yellow] — удалить\n"
+            "  [yellow]/invariant-clear[/yellow] — очистить все  |  кат: [yellow]arch[/yellow] / [yellow]tech[/yellow] / [yellow]stack[/yellow] / [yellow]biz[/yellow]\n"
+            "  [yellow]/demo-invariants[/yellow] — демо: инварианты + тест конфликта\n"
             "  [yellow]/temp 0.7[/yellow] — температура, [yellow]/model <id>[/yellow] — модель\n"
             "  [yellow]/overflow 9000[/yellow] — тест переполнения, [yellow]/clear[/yellow] — очистить историю\n"
             "  [yellow]exit[/yellow] — выход  |  двойной Enter — отправить сообщение",
@@ -579,6 +585,56 @@ def print_task_fsm(fsm: TaskFSM) -> None:
             "\n".join(lines),
             title=f"[bold {title_color}]Task FSM: {fsm.task_name or 'задача'}[/bold {title_color}]",
             border_style=title_color,
+            padding=(0, 1),
+        )
+    )
+    console.print()
+
+
+def print_invariants(manager: InvariantManager) -> None:
+    """Вывести все инварианты, сгруппированные по категориям."""
+    from .invariants import InvariantCategory
+
+    invariants = manager.invariants
+    if not invariants:
+        console.print()
+        console.print(
+            Panel(
+                "[dim]Инвариантов нет.[/dim]\n\n"
+                "Добавьте: [yellow]/invariant-add <кат> <название> | <описание>[/yellow]\n"
+                "Категории: [yellow]arch[/yellow] · [yellow]tech[/yellow] · [yellow]stack[/yellow] · [yellow]biz[/yellow]",
+                title="[bold magenta]Инварианты[/bold magenta]",
+                border_style="magenta",
+                padding=(0, 1),
+            )
+        )
+        console.print()
+        return
+
+    by_category: dict[str, list] = {}
+    for inv in invariants:
+        by_category.setdefault(inv.category.value, []).append(inv)
+
+    lines: list[str] = []
+    for cat_value in ("architecture", "technical", "stack", "business"):
+        items = by_category.get(cat_value)
+        if not items:
+            continue
+        label = CATEGORY_LABELS[cat_value]
+        lines.append(f"[bold cyan]{label}[/bold cyan]")
+        for inv in items:
+            lines.append(f"  [yellow]{inv.id}[/yellow]  {inv.title}")
+            lines.append(f"  [dim]       {inv.description}[/dim]")
+            lines.append(f"  [dim]       Создан: {inv.created_at}[/dim]")
+        lines.append("")
+
+    total = len(invariants)
+    console.print()
+    console.print(
+        Panel(
+            "\n".join(lines).rstrip(),
+            title=f"[bold magenta]Инварианты ({total})[/bold magenta]",
+            border_style="magenta",
             padding=(0, 1),
         )
     )

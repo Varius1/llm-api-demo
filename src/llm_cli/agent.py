@@ -10,6 +10,7 @@ from pathlib import Path
 from platformdirs import user_config_dir
 
 from .api import OpenRouterClient
+from .invariants import InvariantManager
 from .memory import MemoryManager
 from .models import (
     BranchInfo,
@@ -82,6 +83,9 @@ class Agent:
 
         # Модель памяти: рабочая + долговременная.
         self._memory = MemoryManager()
+
+        # Инварианты: неизменяемые правила проекта (хранятся отдельно от диалога).
+        self._invariants = InvariantManager()
 
         # Настройки стратегий.
         self._strategy: StrategyType = StrategyType.SUMMARY
@@ -161,6 +165,10 @@ class Agent:
     @property
     def memory(self) -> MemoryManager:
         return self._memory
+
+    @property
+    def invariants(self) -> InvariantManager:
+        return self._invariants
 
     @property
     def compression_status(self) -> CompressionStatus:
@@ -327,6 +335,12 @@ class Agent:
         else:
             # По умолчанию — summary (исходная логика).
             messages, meta = self._build_summary_request()
+
+        # Инъекция инвариантов — первыми, до профиля и памяти, чтобы модель
+        # видела их максимально близко к началу системного контекста.
+        invariants_block = self._invariants.build_block()
+        if invariants_block:
+            messages = _inject_memory_block(messages, invariants_block)
 
         # Инъекция профиля пользователя — между основным system-промптом и памятью.
         profile_block = self._memory.build_profile_block()

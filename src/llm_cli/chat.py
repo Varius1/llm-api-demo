@@ -16,6 +16,7 @@ from .display import (
     print_branch_list,
     print_chat_turn_stats,
     print_error,
+    print_invariants,
     print_llm_response,
     print_memory_state,
     print_profile,
@@ -179,6 +180,27 @@ def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
 
         if text == "/demo-memory":
             _run_demo_memory(agent)
+            continue
+
+        if text == "/invariants":
+            print_invariants(agent.invariants)
+            continue
+
+        if text.startswith("/invariant-add"):
+            _handle_invariant_add(text, agent)
+            continue
+
+        if text.startswith("/invariant-del"):
+            _handle_invariant_del(text, agent)
+            continue
+
+        if text == "/invariant-clear":
+            agent.invariants.clear()
+            console.print("[green]Все инварианты удалены.[/green]\n")
+            continue
+
+        if text == "/demo-invariants":
+            _run_demo_invariants(agent)
             continue
 
         if text == "/clear":
@@ -2008,5 +2030,187 @@ def _print_demo_fsm_summary(results: list[dict[str, object]]) -> None:
         "  /task fsm next            — следующий этап\n"
         "  /task fsm pause / resume  — пауза и возобновление\n"
         "  /task fsm status          — текущее состояние[/dim]"
+    )
+    console.print()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Обработчики команд инвариантов
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _handle_invariant_add(text: str, agent: Agent) -> None:
+    """Парсит: /invariant-add <кат> <название> | <описание>"""
+    from .invariants import CATEGORY_ALIASES, InvariantCategory
+
+    raw = text.removeprefix("/invariant-add").strip()
+    if not raw:
+        console.print(
+            "[dim]Использование: /invariant-add <кат> <название> | <описание>\n"
+            "Категории: arch · tech · stack · biz[/dim]\n"
+        )
+        return
+
+    parts = raw.split(None, 1)
+    if len(parts) < 2:
+        print_error("Укажите категорию и название: /invariant-add arch <название> | <описание>")
+        return
+
+    cat_raw, rest = parts[0].lower(), parts[1]
+    cat_key = CATEGORY_ALIASES.get(cat_raw)
+    if cat_key is None:
+        print_error(
+            f"Неизвестная категория: «{cat_raw}». "
+            "Допустимые: arch, tech, stack, biz"
+        )
+        return
+
+    category = InvariantCategory(cat_key)
+
+    if "|" in rest:
+        title_raw, description = rest.split("|", 1)
+        title = title_raw.strip()
+        description = description.strip()
+    else:
+        title = rest.strip()
+        description = title
+
+    if not title:
+        print_error("Название инварианта не может быть пустым.")
+        return
+
+    inv = agent.invariants.add(category=category, title=title, description=description)
+    console.print(
+        f"[green]Инвариант добавлен:[/green] [{inv.id}] {inv.title}\n"
+        f"[dim]Категория: {inv.category.value}  |  {inv.description}[/dim]\n"
+    )
+
+
+def _handle_invariant_del(text: str, agent: Agent) -> None:
+    inv_id = text.removeprefix("/invariant-del").strip().upper()
+    if not inv_id:
+        print_error("Укажите ID: /invariant-del INV-XXXXXX")
+        return
+    if agent.invariants.remove(inv_id):
+        console.print(f"[green]Инвариант {inv_id} удалён.[/green]\n")
+    else:
+        print_error(f"Инвариант с ID «{inv_id}» не найден.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Демо инвариантов
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DEMO_INVARIANTS = [
+    ("arch", "Только Clean Architecture",
+     "Запрещены прямые обращения из UI-слоя в базу данных или бизнес-логику. "
+     "Всегда используй слои: Presentation → Domain → Data."),
+    ("stack", "Backend только на FastAPI + PostgreSQL",
+     "Запрещено вводить любые другие фреймворки (Django, Flask) или СУБД (MongoDB, Redis как primary storage). "
+     "Разрешённый стек: FastAPI, SQLAlchemy, Alembic, PostgreSQL ≤14."),
+    ("stack", "Frontend только на React (TypeScript)",
+     "Запрещено использовать Vue, Angular, Svelte или другие UI-фреймворки. "
+     "Стейт-менеджмент: только Zustand или React Context."),
+    ("biz", "Данные пользователей не удаляются физически",
+     "Любые объекты пользователей (аккаунты, заявки, документы) ТОЛЬКО помечаются как archived=true. "
+     "Физическое DELETE запрещено — необходимо для аудита и GDPR-compliant восстановления."),
+    ("biz", "Все API-ответы содержат request_id",
+     "Каждый HTTP-ответ обязан включать заголовок X-Request-ID для трассировки. "
+     "Исключений нет — это требование безопасности и поддержки."),
+]
+
+_DEMO_CONFLICT_REQUESTS = [
+    (
+        "Напиши React-компонент, который напрямую делает SQL-запрос к PostgreSQL.",
+        "Нарушает: Clean Architecture (UI → DB напрямую)",
+    ),
+    (
+        "Предложи использовать MongoDB для хранения профилей пользователей вместо PostgreSQL.",
+        "Нарушает: ограничение стека (только PostgreSQL)",
+    ),
+    (
+        "Напиши endpoint DELETE /users/{id}, который физически удаляет пользователя из БД.",
+        "Нарушает: бизнес-правило (no physical delete)",
+    ),
+]
+
+_DEMO_VALID_REQUEST = (
+    "Как правильно организовать слои Clean Architecture для модуля авторизации в FastAPI?"
+)
+
+
+def _run_demo_invariants(agent: Agent) -> None:
+    """Демо инвариантов: добавление, корректный запрос, конфликтующий запрос."""
+    console.rule("[bold magenta]ДЕМО: Инварианты ассистента[/bold magenta]")
+    console.print()
+    console.print(
+        "[dim]Демонстрирует: хранение инвариантов отдельно от диалога, "
+        "учёт в рассуждениях, отказ при конфликте с объяснением.[/dim]\n"
+    )
+
+    # 1. Сохраняем текущие инварианты и очищаем для чистоты демо
+    original_invariants = list(agent.invariants.invariants)
+    agent.invariants.clear()
+
+    # 2. Загружаем демо-инварианты
+    from .invariants import CATEGORY_ALIASES, InvariantCategory
+
+    console.print("[bold]Шаг 1: Загружаем инварианты проекта[/bold]")
+    added = []
+    for cat_alias, title, description in _DEMO_INVARIANTS:
+        cat = InvariantCategory(CATEGORY_ALIASES[cat_alias])
+        inv = agent.invariants.add(category=cat, title=title, description=description)
+        added.append(inv)
+        console.print(f"  [green]+[/green] [{inv.id}] {inv.title}")
+
+    console.print()
+    print_invariants(agent.invariants)
+
+    # 3. Корректный запрос (должен пройти нормально)
+    console.rule("[bold cyan]Шаг 2: Корректный запрос (соответствует инвариантам)[/bold cyan]")
+    console.print(f"[bold yellow]Запрос:[/bold yellow] {_DEMO_VALID_REQUEST}\n")
+    with console.status("[bold cyan]Думаю...[/bold cyan]", spinner="dots"):
+        try:
+            reply, stats = agent.run_with_stats(_DEMO_VALID_REQUEST)
+            from .display import print_llm_response, print_chat_turn_stats
+            print_llm_response(reply)
+            print_chat_turn_stats(stats)
+        except Exception as e:
+            print_error(str(e))
+
+    # 4. Конфликтующие запросы
+    for i, (request, expected_conflict) in enumerate(_DEMO_CONFLICT_REQUESTS, 1):
+        console.rule(
+            f"[bold red]Шаг {2 + i}: Конфликтующий запрос #{i}[/bold red]"
+        )
+        console.print(f"[bold yellow]Запрос:[/bold yellow] {request}")
+        console.print(f"[dim]Ожидаемый конфликт: {expected_conflict}[/dim]\n")
+
+        with console.status("[bold cyan]Думаю...[/bold cyan]", spinner="dots"):
+            try:
+                reply, stats = agent.run_with_stats(request)
+                from .display import print_llm_response, print_chat_turn_stats
+                print_llm_response(reply)
+                print_chat_turn_stats(stats)
+            except Exception as e:
+                print_error(str(e))
+
+    # 5. Восстанавливаем оригинальное состояние
+    agent.invariants.clear()
+    for inv in original_invariants:
+        agent.invariants.add(
+            category=inv.category, title=inv.title, description=inv.description
+        )
+    agent.clear_history()
+
+    console.rule("[bold magenta]ДЕМО завершено[/bold magenta]")
+    console.print()
+    console.print(
+        "[dim]Инварианты хранятся в ~/.config/llm-cli/invariants.json — отдельно от диалога.\n"
+        "Они инжектируются в каждый запрос как системный блок с явными инструкциями:\n"
+        "  • учитывать инварианты в рассуждениях\n"
+        "  • отказывать при конфликте\n"
+        "  • называть нарушенный инвариант по ID\n"
+        "  • предлагать допустимую альтернативу\n\n"
+        "Команды: /invariants · /invariant-add · /invariant-del · /invariant-clear[/dim]"
     )
     console.print()
