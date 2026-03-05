@@ -2096,121 +2096,215 @@ def _handle_invariant_del(text: str, agent: Agent) -> None:
         print_error(f"Инвариант с ID «{inv_id}» не найден.")
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Демо инвариантов
+# Данные для демо инвариантов
 # ─────────────────────────────────────────────────────────────────────────────
 
-_DEMO_INVARIANTS = [
+_DEMO_INV_DATA = [
     ("arch", "Только Clean Architecture",
      "Запрещены прямые обращения из UI-слоя в базу данных или бизнес-логику. "
-     "Всегда используй слои: Presentation → Domain → Data."),
+     "Всегда используй слои: Presentation -> Domain -> Data."),
     ("stack", "Backend только на FastAPI + PostgreSQL",
      "Запрещено вводить любые другие фреймворки (Django, Flask) или СУБД (MongoDB, Redis как primary storage). "
-     "Разрешённый стек: FastAPI, SQLAlchemy, Alembic, PostgreSQL ≤14."),
+     "Разрешённый стек: FastAPI, SQLAlchemy, Alembic, PostgreSQL <=14."),
     ("stack", "Frontend только на React (TypeScript)",
      "Запрещено использовать Vue, Angular, Svelte или другие UI-фреймворки. "
      "Стейт-менеджмент: только Zustand или React Context."),
     ("biz", "Данные пользователей не удаляются физически",
      "Любые объекты пользователей (аккаунты, заявки, документы) ТОЛЬКО помечаются как archived=true. "
      "Физическое DELETE запрещено — необходимо для аудита и GDPR-compliant восстановления."),
-    ("biz", "Все API-ответы содержат request_id",
+    ("biz", "Все API-ответы содержат X-Request-ID",
      "Каждый HTTP-ответ обязан включать заголовок X-Request-ID для трассировки. "
      "Исключений нет — это требование безопасности и поддержки."),
 ]
 
-_DEMO_CONFLICT_REQUESTS = [
+# (запрос, метка конфликта, цвет)
+_DEMO_INV_CONFLICTS = [
     (
-        "Напиши React-компонент, который напрямую делает SQL-запрос к PostgreSQL.",
-        "Нарушает: Clean Architecture (UI → DB напрямую)",
+        "Напиши React-компонент, который напрямую делает SQL-запрос к PostgreSQL через fetch.",
+        "Нарушает [АРХИТЕКТУРА]: UI -> DB без слоёв Domain/Data",
+        "red",
     ),
     (
-        "Предложи использовать MongoDB для хранения профилей пользователей вместо PostgreSQL.",
-        "Нарушает: ограничение стека (только PostgreSQL)",
+        "Предложи перейти на MongoDB для хранения пользовательских сессий — PostgreSQL медленный.",
+        "Нарушает [СТЕК]: только PostgreSQL, MongoDB запрещён",
+        "red",
     ),
     (
-        "Напиши endpoint DELETE /users/{id}, который физически удаляет пользователя из БД.",
-        "Нарушает: бизнес-правило (no physical delete)",
+        "Напиши миграцию и endpoint DELETE /users/{id}, чтобы полностью удалять аккаунт из БД.",
+        "Нарушает [БИЗНЕС-ПРАВИЛО]: физический DELETE запрещён, только archived=true",
+        "red",
     ),
 ]
 
-_DEMO_VALID_REQUEST = (
-    "Как правильно организовать слои Clean Architecture для модуля авторизации в FastAPI?"
+_DEMO_INV_VALID = (
+    "Как правильно реализовать use-case авторизации в Clean Architecture на FastAPI? "
+    "Покажи структуру слоёв и где размещается JWT-логика."
 )
 
 
 def _run_demo_invariants(agent: Agent) -> None:
-    """Демо инвариантов: добавление, корректный запрос, конфликтующий запрос."""
-    console.rule("[bold magenta]ДЕМО: Инварианты ассистента[/bold magenta]")
-    console.print()
-    console.print(
-        "[dim]Демонстрирует: хранение инвариантов отдельно от диалога, "
-        "учёт в рассуждениях, отказ при конфликте с объяснением.[/dim]\n"
-    )
-
-    # 1. Сохраняем текущие инварианты и очищаем для чистоты демо
-    original_invariants = list(agent.invariants.invariants)
-    agent.invariants.clear()
-
-    # 2. Загружаем демо-инварианты
+    """Демо инвариантов: добавление, инжекция system-блока, корректный запрос, конфликты с отказом."""
     from .invariants import CATEGORY_ALIASES, InvariantCategory
 
-    console.print("[bold]Шаг 1: Загружаем инварианты проекта[/bold]")
-    added = []
-    for cat_alias, title, description in _DEMO_INVARIANTS:
+    console.print()
+    console.print(
+        "[bold magenta]Demo-Invariants запущено.[/bold magenta] "
+        "Демонстрация инвариантов ассистента: неизменяемых правил проекта."
+    )
+    console.print(
+        "[dim]Что будет показано:\n"
+        "  1. Инварианты хранятся отдельно от диалога (invariants.json)\n"
+        "  2. При каждом запросе они инжектируются как первый system-блок\n"
+        "  3. Корректный запрос — нормальный помогающий ответ\n"
+        "  4. Три конфликтующих запроса — отказ с ID нарушенного инварианта\n"
+        "Будет выполнено 4 API-запроса. Нажмите Ctrl+C для отмены.[/dim]\n"
+    )
+
+    # Сохраняем исходное состояние
+    original_invariants = list(agent.invariants.invariants)
+    agent.invariants.clear()
+    agent.clear_history()
+    agent._save_state()
+
+    # ── Шаг 1: Добавляем инварианты ──────────────────────────────────────────
+    console.rule("[bold]Шаг 1: Регистрируем инварианты проекта[/bold]", style="magenta")
+    console.print(
+        "[dim]Инварианты хранятся в [cyan]~/.config/llm-cli/invariants.json[/cyan] — "
+        "отдельно от диалога, памяти и профиля.\n"
+        "Они не сбрасываются при /clear и переживают перезапуск программы.[/dim]\n"
+    )
+    for cat_alias, title, description in _DEMO_INV_DATA:
         cat = InvariantCategory(CATEGORY_ALIASES[cat_alias])
         inv = agent.invariants.add(category=cat, title=title, description=description)
-        added.append(inv)
-        console.print(f"  [green]+[/green] [{inv.id}] {inv.title}")
+        console.print(
+            f"  [green]+[/green] /invariant-add {cat_alias} "
+            f"[yellow]{title}[/yellow]"
+        )
+        console.print(f"  [dim]       {description[:80]}[/dim]")
 
     console.print()
     print_invariants(agent.invariants)
 
-    # 3. Корректный запрос (должен пройти нормально)
-    console.rule("[bold cyan]Шаг 2: Корректный запрос (соответствует инвариантам)[/bold cyan]")
-    console.print(f"[bold yellow]Запрос:[/bold yellow] {_DEMO_VALID_REQUEST}\n")
+    # ── Шаг 2: Показываем что инжектируется в каждый запрос ──────────────────
+    console.rule(
+        "[bold]Шаг 2: System-блок, который добавляется к каждому запросу LLM[/bold]",
+        style="magenta",
+    )
+    console.print(
+        "[dim]При каждом вызове агента инварианты вставляются первым system-сообщением —\n"
+        "ДО профиля, памяти и FSM-промпта. Модель видит их в приоритетной позиции.[/dim]\n"
+    )
+    injected_block = agent.invariants.build_block()
+    console.print(
+        Panel(
+            injected_block,
+            title="[dim]system-сообщение: инварианты (инжектируется в каждый запрос)[/dim]",
+            border_style="dim",
+            padding=(0, 1),
+        )
+    )
+
+    # ── Шаг 3: Корректный запрос ─────────────────────────────────────────────
+    console.rule(
+        "[bold cyan]Шаг 3: Корректный запрос — инварианты НЕ нарушены[/bold cyan]"
+    )
+    console.print(
+        "[dim]Запрос полностью соответствует архитектурным правилам.\n"
+        "Ожидаем: нормальный полезный ответ без отказов.[/dim]\n"
+    )
+    console.print(f"[bold yellow]Запрос:[/bold yellow] {_DEMO_INV_VALID}\n")
     with console.status("[bold cyan]Думаю...[/bold cyan]", spinner="dots"):
         try:
-            reply, stats = agent.run_with_stats(_DEMO_VALID_REQUEST)
-            from .display import print_llm_response, print_chat_turn_stats
-            print_llm_response(reply)
-            print_chat_turn_stats(stats)
+            reply_valid, stats_valid = _run_demo_request_with_retry(agent, _DEMO_INV_VALID)
         except Exception as e:
-            print_error(str(e))
+            print_error(f"Ошибка API: {e}")
+            _restore_demo_invariants(agent, original_invariants)
+            return
+    print_llm_response(reply_valid)
+    print_chat_turn_stats(stats_valid)
 
-    # 4. Конфликтующие запросы
-    for i, (request, expected_conflict) in enumerate(_DEMO_CONFLICT_REQUESTS, 1):
+    # ── Шаги 4–6: Конфликтующие запросы (каждый — в чистой истории) ──────────
+    conflict_results: list[dict[str, object]] = []
+
+    for i, (request, conflict_label, color) in enumerate(_DEMO_INV_CONFLICTS, 1):
+        # Чистая история между конфликтами — чтобы не накапливать контекст
+        agent.clear_history()
+        agent._save_state()
+
         console.rule(
-            f"[bold red]Шаг {2 + i}: Конфликтующий запрос #{i}[/bold red]"
+            f"[bold {color}]Шаг {3 + i}: Конфликтующий запрос #{i}[/bold {color}]"
         )
-        console.print(f"[bold yellow]Запрос:[/bold yellow] {request}")
-        console.print(f"[dim]Ожидаемый конфликт: {expected_conflict}[/dim]\n")
+        console.print(
+            f"[dim]Ожидаемый конфликт: {conflict_label}[/dim]\n"
+            "[dim]Ожидаем: отказ + ID нарушенного инварианта + предложение альтернативы.[/dim]\n"
+        )
+        console.print(f"[bold yellow]Запрос:[/bold yellow] {request}\n")
 
         with console.status("[bold cyan]Думаю...[/bold cyan]", spinner="dots"):
             try:
-                reply, stats = agent.run_with_stats(request)
-                from .display import print_llm_response, print_chat_turn_stats
-                print_llm_response(reply)
-                print_chat_turn_stats(stats)
+                reply_conflict, stats_conflict = _run_demo_request_with_retry(agent, request)
             except Exception as e:
-                print_error(str(e))
+                print_error(f"Ошибка API: {e}")
+                conflict_results.append({"label": conflict_label, "reply": f"[ошибка: {e}]"})
+                continue
 
-    # 5. Восстанавливаем оригинальное состояние
+        conflict_results.append({"label": conflict_label, "reply": reply_conflict})
+        print_llm_response(reply_conflict)
+        print_chat_turn_stats(stats_conflict)
+
+    # ── Итоговая таблица ──────────────────────────────────────────────────────
+    _print_demo_invariants_summary(conflict_results)
+
+    # Восстанавливаем исходное состояние
+    _restore_demo_invariants(agent, original_invariants)
+
+
+def _restore_demo_invariants(agent: Agent, original_invariants: list) -> None:
+    """Восстановить инварианты и историю после демо."""
     agent.invariants.clear()
     for inv in original_invariants:
         agent.invariants.add(
             category=inv.category, title=inv.title, description=inv.description
         )
     agent.clear_history()
+    agent._save_state()
 
-    console.rule("[bold magenta]ДЕМО завершено[/bold magenta]")
+
+def _print_demo_invariants_summary(
+    conflict_results: list[dict[str, object]],
+) -> None:
+    """Итоговая таблица: нарушенные инварианты и реакция ассистента."""
+    console.rule("[bold magenta]ИТОГ: Demo-Invariants[/bold magenta]")
+    console.print()
+
+    table = Table(
+        title="Конфликтующие запросы — реакция ассистента",
+        show_lines=True,
+    )
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Нарушенный инвариант", min_width=36)
+    table.add_column("Ответ ассистента (начало)", min_width=50)
+
+    for i, r in enumerate(conflict_results, 1):
+        label = str(r.get("label", ""))
+        reply = str(r.get("reply", ""))
+        preview = _one_line(reply)[:200]
+        table.add_row(str(i), f"[red]{label}[/red]", preview)
+
+    console.print(table)
     console.print()
     console.print(
-        "[dim]Инварианты хранятся в ~/.config/llm-cli/invariants.json — отдельно от диалога.\n"
-        "Они инжектируются в каждый запрос как системный блок с явными инструкциями:\n"
-        "  • учитывать инварианты в рассуждениях\n"
-        "  • отказывать при конфликте\n"
-        "  • называть нарушенный инвариант по ID\n"
-        "  • предлагать допустимую альтернативу\n\n"
-        "Команды: /invariants · /invariant-add · /invariant-del · /invariant-clear[/dim]"
+        "[dim]Ключевые свойства системы инвариантов:\n"
+        "  * Хранятся в [cyan]~/.config/llm-cli/invariants.json[/cyan] — отдельно от диалога\n"
+        "  * Инжектируются в каждый запрос первым system-сообщением\n"
+        "  * Ассистент называет ID нарушенного инварианта и предлагает альтернативу\n"
+        "  * Не сбрасываются командой /clear\n\n"
+        "Команды управления:\n"
+        "  /invariants                               — показать все\n"
+        "  /invariant-add arch|tech|stack|biz <...>  — добавить\n"
+        "  /invariant-del <ID>                       — удалить\n"
+        "  /invariant-clear                          — очистить все[/dim]"
     )
     console.print()
