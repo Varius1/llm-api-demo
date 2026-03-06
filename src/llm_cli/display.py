@@ -11,7 +11,13 @@ from .invariants import CATEGORY_LABELS, InvariantManager
 from .memory import MemoryManager, UserProfile
 from .models import BenchmarkResult, BranchInfo, ChatTurnStats, ModelConfig, StrategyType
 from .strategy import STRATEGY_LABELS
-from .task_fsm import STAGE_CHAIN, STAGE_LABELS as FSM_STAGE_LABELS, TaskFSM, TaskStage
+from .task_fsm import (
+    STAGE_CHAIN,
+    STAGE_LABELS as FSM_STAGE_LABELS,
+    ForbiddenTransitionError,
+    TaskFSM,
+    TaskStage,
+)
 
 console = Console()
 
@@ -37,9 +43,12 @@ def print_welcome(model: str, temperature: float | None) -> None:
             "  [yellow]/task fsm start <имя>[/yellow] — запустить задачу (planning → execution → validation → done)\n"
             "  [yellow]/task fsm next [заметка][/yellow] — перейти к следующему этапу\n"
             "  [yellow]/task fsm pause[/yellow] — пауза (LLM отвечает свободно)  |  [yellow]/task fsm resume[/yellow] — возобновить\n"
+            "  [yellow]/task fsm goto <этап>[/yellow] — попытка перехода (всегда заблокирована — показывает причину)\n"
             "  [yellow]/task fsm step <шаг>[/yellow] — текущий шаг  |  [yellow]/task fsm artifact <ключ> <текст>[/yellow] — артефакт\n"
             "  [yellow]/task fsm status[/yellow] — состояние FSM  |  [yellow]/task fsm clear[/yellow] — сброс\n"
-            "  [yellow]/demo-fsm[/yellow] — автодемо: planning→execution→pause/resume→validation→done\n"
+            "  [yellow]/demo-fsm-lifecycle[/yellow] — [bold]для видео[/bold]: полный цикл с LLM + блокировки + пауза/resume (~5 запросов)\n"
+            "  [yellow]/demo-fsm-guards[/yellow] — демо защиты переходов без API (чистая FSM-логика)\n"
+            "  [yellow]/demo-fsm[/yellow] — расширенное демо: все этапы + сравнительная таблица ответов\n"
             "  [bold cyan]Модель памяти:[/bold cyan]\n"
             "  [yellow]/memory[/yellow] — показать все 3 слоя памяти\n"
             "  [yellow]/task <описание>[/yellow] — задать задачу в рабочей памяти  |  [yellow]/task clear[/yellow] — очистить\n"
@@ -585,6 +594,30 @@ def print_task_fsm(fsm: TaskFSM) -> None:
             "\n".join(lines),
             title=f"[bold {title_color}]Task FSM: {fsm.task_name or 'задача'}[/bold {title_color}]",
             border_style=title_color,
+            padding=(0, 1),
+        )
+    )
+    console.print()
+
+
+def print_fsm_transition_error(error: ForbiddenTransitionError) -> None:
+    """Показать ошибку недопустимого перехода FSM в Rich-панели с красной рамкой."""
+    from_label = FSM_STAGE_LABELS.get(error.from_stage, error.from_stage.value)
+    to_label = FSM_STAGE_LABELS.get(error.to_stage, error.to_stage.value)
+
+    lines = [
+        f"[bold red]Переход запрещён:[/bold red]  «{from_label}» → «{to_label}»",
+        "",
+        f"[red]{error.reason}[/red]",
+        "",
+        f"[dim]Подсказка: {error.hint}[/dim]",
+    ]
+    console.print()
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="[bold red]Недопустимый переход FSM[/bold red]",
+            border_style="red",
             padding=(0, 1),
         )
     )

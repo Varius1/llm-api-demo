@@ -16,6 +16,7 @@ from .display import (
     print_branch_list,
     print_chat_turn_stats,
     print_error,
+    print_fsm_transition_error,
     print_invariants,
     print_llm_response,
     print_memory_state,
@@ -147,6 +148,14 @@ def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
 
         if text == "/demo-fsm":
             _run_demo_fsm(agent)
+            continue
+
+        if text == "/demo-fsm-guards":
+            _run_demo_fsm_guards_standalone(agent)
+            continue
+
+        if text == "/demo-fsm-lifecycle":
+            _run_demo_fsm_lifecycle(agent)
             continue
 
         if text.startswith("/task"):
@@ -1616,6 +1625,17 @@ def _handle_task_fsm(raw: str, agent: Agent) -> None:
             print_error(str(e))
         return
 
+    # /task fsm goto <этап>
+    if sub == "goto":
+        if not rest:
+            print_error(
+                "Использование: /task fsm goto <этап>\n"
+                "Этапы: planning, execution, validation, done, paused"
+            )
+            return
+        _handle_task_fsm_goto(rest.strip().lower(), agent)
+        return
+
     # /task fsm clear
     if sub == "clear":
         mem.clear_fsm()
@@ -1625,8 +1645,53 @@ def _handle_task_fsm(raw: str, agent: Agent) -> None:
 
     print_error(
         f"Неизвестная FSM-подкоманда: «{sub}».\n"
-        "Доступные: start, status, next, pause, resume, step, artifact, clear"
+        "Доступные: start, status, next, pause, resume, goto, step, artifact, clear"
     )
+
+
+_STAGE_ALIASES: dict[str, str] = {
+    "planning": "planning",
+    "plan": "planning",
+    "execution": "execution",
+    "exec": "execution",
+    "validation": "validation",
+    "valid": "validation",
+    "done": "done",
+    "finish": "done",
+    "paused": "paused",
+    "pause": "paused",
+}
+
+
+def _handle_task_fsm_goto(stage_raw: str, agent: Agent) -> None:
+    """Обработчик /task fsm goto <этап>."""
+    from .task_fsm import ForbiddenTransitionError, STAGE_LABELS as FSM_STAGE_LABELS, TaskStage
+
+    stage_key = _STAGE_ALIASES.get(stage_raw)
+    if stage_key is None:
+        print_error(
+            f"Неизвестный этап: «{stage_raw}».\n"
+            "Допустимые: planning, execution, validation, done, paused"
+        )
+        return
+
+    try:
+        target = TaskStage(stage_key)
+    except ValueError:
+        print_error(f"Неизвестный этап: «{stage_raw}».")
+        return
+
+    mem = agent.memory
+    try:
+        fsm = mem.goto_fsm(target)
+        agent._save_state()
+        label = FSM_STAGE_LABELS[fsm.stage]
+        console.print(f"[green]Переход выполнен → этап [bold]{label}[/bold][/green]\n")
+        print_task_fsm(fsm)
+    except ForbiddenTransitionError as e:
+        print_fsm_transition_error(e)
+    except ValueError as e:
+        print_error(str(e))
 
 
 def _handle_remember(text: str, agent: Agent) -> None:
@@ -1727,6 +1792,803 @@ def _looks_like_context_overflow(error_text: str) -> bool:
 # Demo: Task FSM
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _run_demo_fsm_guards(agent: Agent) -> None:
+    """Шаг 0 demo-fsm: проверка недопустимых переходов без API-запросов."""
+    from .task_fsm import ForbiddenTransitionError, TaskStage
+
+    console.rule("[bold red]Шаг 0: Защита от недопустимых переходов[/bold red]")
+    console.print(
+        "[dim]Запускаем временный FSM и пробуем выполнить запрещённые переходы.\n"
+        "Ни один API-запрос не отправляется — это чистая FSM-логика.[/dim]\n"
+    )
+
+    # Запускаем временный FSM для демонстрации
+    fsm_demo = agent.memory.start_fsm("Демо-задача (проверка переходов)")
+    agent._save_state()
+    print_task_fsm(fsm_demo)
+
+    # Сценарии проверки через goto() — все должны быть заблокированы
+    goto_checks: list[tuple[str, TaskStage]] = [
+        (
+            "/task fsm goto execution  (planning → execution без явного next)",
+            TaskStage.EXECUTION,
+        ),
+        (
+            "/task fsm goto validation  (прыжок через реализацию)",
+            TaskStage.VALIDATION,
+        ),
+        (
+            "/task fsm goto done  (прыжок через все этапы)",
+            TaskStage.DONE,
+        ),
+    ]
+
+    table = Table(
+        title="goto-проверки из PLANNING — все должны быть заблокированы",
+        show_lines=True,
+    )
+    table.add_column("Попытка", min_width=50)
+    table.add_column("Результат", justify="center", min_width=14)
+    table.add_column("Объяснение FSM", min_width=44)
+
+    for description, target in goto_checks:
+        try:
+            agent.memory.goto_fsm(target)
+            result_ok = True
+            explanation = "Переход выполнен."
+            agent._save_state()
+        except ForbiddenTransitionError as e:
+            result_ok = False
+            explanation = e.reason
+        except ValueError as e:
+            result_ok = False
+            explanation = str(e)
+
+        status_str = (
+            "[bold red]✗ заблокирован[/bold red]"
+            if not result_ok
+            else "[bold yellow]! ожидался отказ[/bold yellow]"
+        )
+        table.add_row(f"[dim]{description}[/dim]", status_str, explanation)
+
+    console.print(table)
+    console.print()
+
+    # Пауза и повторная пауза — через штатные методы
+    pause_checks: list[tuple[str, bool]] = [
+        ("/task fsm pause  (первая пауза — разрешена)", True),
+        ("/task fsm pause  (повторная пауза — уже на паузе)", False),
+    ]
+
+    table_pause = Table(
+        title="Проверка паузы из PLANNING",
+        show_lines=True,
+    )
+    table_pause.add_column("Попытка", min_width=48)
+    table_pause.add_column("Результат", justify="center", min_width=14)
+    table_pause.add_column("Объяснение", min_width=30)
+
+    for description, expect_ok in pause_checks:
+        try:
+            agent.memory.pause_fsm()
+            result_ok = True
+            explanation = "Пауза установлена."
+            agent._save_state()
+        except ValueError as e:
+            result_ok = False
+            explanation = str(e)
+
+        if result_ok and expect_ok:
+            status_str = "[bold green]✓ разрешён[/bold green]"
+        elif not result_ok and not expect_ok:
+            status_str = "[bold red]✗ заблокирован[/bold red]"
+        else:
+            status_str = "[bold yellow]! неожиданно[/bold yellow]"
+
+        table_pause.add_row(f"[dim]{description}[/dim]", status_str, explanation)
+
+    console.print(table_pause)
+    console.print()
+
+    # resume → PLANNING, затем advance → EXECUTION для следующей таблицы
+    console.print(
+        "[dim]Возобновляем FSM и переходим в EXECUTION, чтобы проверить блокировки назад...[/dim]\n"
+    )
+    try:
+        agent.memory.resume_fsm()
+        agent._save_state()
+    except ValueError:
+        pass
+
+    # advance PLANNING → EXECUTION
+    try:
+        agent.memory.advance_fsm("тест")
+        agent._save_state()
+    except ValueError:
+        pass
+
+    # Теперь мы в EXECUTION — пробуем вернуться назад
+    back_checks: list[tuple[str, TaskStage]] = [
+        ("goto planning  (нельзя идти назад)", TaskStage.PLANNING),
+        ("goto done  (нельзя пропустить validation)", TaskStage.DONE),
+    ]
+
+    table2 = Table(
+        title="Проверки FSM-переходов из этапа EXECUTION",
+        show_lines=True,
+    )
+    table2.add_column("Попытка", min_width=40)
+    table2.add_column("Результат", justify="center", min_width=12)
+    table2.add_column("Объяснение", min_width=44)
+
+    for description, target in back_checks:
+        try:
+            agent.memory.goto_fsm(target)
+            result_ok = True
+            explanation = "Переход выполнен."
+            agent._save_state()
+        except ForbiddenTransitionError as e:
+            result_ok = False
+            explanation = e.reason
+        except ValueError as e:
+            result_ok = False
+            explanation = str(e)
+
+        status_str = (
+            "[bold red]✗ заблокирован[/bold red]"
+            if not result_ok
+            else "[bold yellow]! ожидался отказ[/bold yellow]"
+        )
+        table2.add_row(f"[dim]{description}[/dim]", status_str, explanation)
+
+    console.print(table2)
+    console.print()
+
+    console.print(
+        "[green]Шаг 0 завершён.[/green] [dim]FSM корректно блокирует все недопустимые переходы.[/dim]\n"
+        "[dim]Сбрасываем временный FSM и запускаем основной сценарий...[/dim]\n"
+    )
+
+    # Сбрасываем временный FSM — основной сценарий запустит новый
+    agent.memory.clear_fsm()
+    agent._save_state()
+
+
+_LIFECYCLE_TASK = "Реализовать JWT-аутентификацию для REST API"
+
+_LIFECYCLE_QUESTION = (
+    "По задаче «{}»: что конкретно ты делаешь прямо сейчас и каков твой следующий шаг? "
+    "Ответь в 3-4 предложениях."
+)
+
+_LIFECYCLE_PAUSE_QUESTION = (
+    "Объясни в двух словах: что такое JWT? Отвечай свободно, без привязки к задаче."
+)
+
+
+def _run_demo_fsm_lifecycle(agent: Agent) -> None:
+    """Полное демо жизненного цикла задачи с LLM-запросами — для записи видео.
+
+    Сценарий:
+      1. Запуск FSM, показ stage-промпта PLANNING
+      2. Попытки запрещённых переходов — FSM блокирует с объяснением
+      3. Вопрос к LLM в режиме PLANNING — ассистент планирует
+      4. Переход в EXECUTION через next
+      5. Тот же вопрос в EXECUTION — ассистент реализует
+      6. Пауза — посторонний вопрос без FSM-ограничений
+      7. Resume — ассистент возвращается в EXECUTION
+      8. Переход в VALIDATION → вопрос → вердикт
+      9. Done — задача закрыта
+    """
+    from .task_fsm import ForbiddenTransitionError, STAGE_SYSTEM_PROMPTS, TaskStage
+
+    original_fsm = agent.memory.get_fsm()
+    original_task = agent.memory.working.task
+    agent.clear_history()
+    agent.memory.clear_fsm()
+    agent._save_state()
+
+    question = _LIFECYCLE_QUESTION.format(_LIFECYCLE_TASK)
+
+    console.print()
+    console.print(
+        Panel(
+            "[bold]Demo: FSM Lifecycle — контролируемый жизненный цикл задачи[/bold]\n\n"
+            f"Задача: [yellow]{_LIFECYCLE_TASK}[/yellow]\n\n"
+            "Что будет показано:\n"
+            "  1. Запуск FSM → этап PLANNING\n"
+            "  2. Попытки прыгнуть через этапы → FSM блокирует\n"
+            "  3. Вопрос к LLM в PLANNING → ассистент планирует\n"
+            "  4. next → EXECUTION → тот же вопрос → ассистент реализует\n"
+            "  5. pause → посторонний вопрос без ограничений FSM\n"
+            "  6. resume → EXECUTION → ассистент продолжает с того же места\n"
+            "  7. next → VALIDATION → вопрос → вердикт\n"
+            "  8. next → DONE → задача закрыта\n\n"
+            "[dim]API-запросов: ~5. Нажимайте Enter для перехода к следующему шагу.[/dim]",
+            title="[bold cyan]Demo: FSM Lifecycle[/bold cyan]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    console.print()
+    _wait_for_user("Нажмите Enter чтобы начать...")
+
+    # ── Шаг 1: Запуск FSM ────────────────────────────────────────────────────
+    console.rule("[bold yellow]Шаг 1: Запуск задачи[/bold yellow]")
+    console.print(f"[dim]→ /task fsm start «{_LIFECYCLE_TASK}»[/dim]\n")
+    fsm = agent.memory.start_fsm(_LIFECYCLE_TASK)
+    agent._save_state()
+    print_task_fsm(fsm)
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.PLANNING],
+            title="[dim]Этот system-промпт добавляется в каждый запрос к LLM[/dim]",
+            border_style="yellow",
+            padding=(0, 1),
+        )
+    )
+    _wait_for_user()
+
+    # ── Шаг 2: Попытки запрещённых переходов ─────────────────────────────────
+    console.rule("[bold red]Шаг 2: Попытки прыгнуть через этапы[/bold red]")
+    console.print(
+        "[dim]Пробуем вызвать /task fsm goto — FSM должен заблокировать каждую попытку.[/dim]\n"
+    )
+
+    for target, cmd in [
+        (TaskStage.EXECUTION,  "/task fsm goto execution  ← нельзя без завершённого плана"),
+        (TaskStage.VALIDATION, "/task fsm goto validation ← нельзя без реализации"),
+        (TaskStage.DONE,       "/task fsm goto done       ← нельзя пропустить все этапы"),
+    ]:
+        console.print(f"[bold yellow]→ {cmd}[/bold yellow]")
+        try:
+            agent.memory.goto_fsm(target)
+            console.print("[bold red]ОШИБКА: переход не должен был выполниться![/bold red]")
+        except ForbiddenTransitionError as e:
+            print_fsm_transition_error(e)
+
+    console.print("[green]FSM не изменился — все попытки заблокированы.[/green]")
+    print_task_fsm(agent.memory.get_fsm())
+    _wait_for_user()
+
+    # ── Шаг 3: LLM-запрос в PLANNING ─────────────────────────────────────────
+    console.rule("[bold yellow]Шаг 3: Вопрос к ассистенту в режиме PLANNING[/bold yellow]")
+    console.print(
+        "[dim]Ассистент получает stage-промпт PLANNING → должен помогать планировать,\n"
+        "не начинать реализацию.[/dim]\n"
+    )
+    console.print(f"[bold]Вопрос:[/bold] {question}\n")
+
+    answer_planning = _lifecycle_ask(agent, question, "planning")
+    if answer_planning is None:
+        _restore_lifecycle(agent, original_fsm, original_task)
+        return
+
+    print_llm_response(answer_planning)
+    agent.memory.add_fsm_artifact("план", answer_planning[:200])
+    agent._save_state()
+    console.print("[dim]→ ответ сохранён как артефакт «план»[/dim]\n")
+    _wait_for_user()
+
+    # ── Шаг 4: Переход PLANNING → EXECUTION ──────────────────────────────────
+    console.rule("[bold cyan]Шаг 4: Переход к реализации[/bold cyan]")
+    console.print("[dim]→ /task fsm next «план утверждён»[/dim]\n")
+    fsm = agent.memory.advance_fsm("план утверждён")
+    agent._save_state()
+    print_task_fsm(fsm)
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.EXECUTION],
+            title="[dim]Stage-промпт сменился — теперь EXECUTION[/dim]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    _wait_for_user()
+
+    # ── Шаг 5: Тот же вопрос в EXECUTION ─────────────────────────────────────
+    console.rule("[bold cyan]Шаг 5: Тот же вопрос в режиме EXECUTION[/bold cyan]")
+    console.print(
+        "[dim]Вопрос не изменился — но stage-промпт другой.\n"
+        "Ассистент теперь в режиме реализации.[/dim]\n"
+    )
+    console.print(f"[bold]Вопрос:[/bold] {question}\n")
+
+    answer_execution = _lifecycle_ask(agent, question, "execution")
+    if answer_execution is None:
+        _restore_lifecycle(agent, original_fsm, original_task)
+        return
+
+    print_llm_response(answer_execution)
+    _wait_for_user()
+
+    # ── Шаг 6: Пауза — посторонний вопрос ────────────────────────────────────
+    console.rule("[bold magenta]Шаг 6: Пауза — срочный посторонний вопрос[/bold magenta]")
+    console.print(
+        "[dim]→ /task fsm pause — stage-промпт убирается.\n"
+        "LLM отвечает свободно, без ограничений этапа.[/dim]\n"
+    )
+    fsm = agent.memory.pause_fsm()
+    agent._save_state()
+    print_task_fsm(fsm)
+
+    console.print(f"[bold]Посторонний вопрос:[/bold] {_LIFECYCLE_PAUSE_QUESTION}\n")
+    answer_pause = _lifecycle_ask(agent, _LIFECYCLE_PAUSE_QUESTION, "пауза")
+    if answer_pause is None:
+        _restore_lifecycle(agent, original_fsm, original_task)
+        return
+
+    print_llm_response(answer_pause)
+    console.print("[dim]Ассистент ответил свободно — без FSM-ограничений.[/dim]\n")
+    _wait_for_user()
+
+    # ── Шаг 7: Resume — возврат в EXECUTION ──────────────────────────────────
+    console.rule("[bold cyan]Шаг 7: Resume — возврат к задаче[/bold cyan]")
+    console.print(
+        "[dim]→ /task fsm resume — stage-промпт EXECUTION возвращается автоматически.\n"
+        "Контекст не потерян — продолжаем с того же места.[/dim]\n"
+    )
+    fsm = agent.memory.resume_fsm()
+    agent._save_state()
+    print_task_fsm(fsm)
+
+    resume_question = (
+        f"По задаче «{_LIFECYCLE_TASK}»: мы вернулись после паузы. "
+        "Напомни коротко на чём остановились и что делаем дальше."
+    )
+    console.print(f"[bold]Вопрос:[/bold] {resume_question}\n")
+    answer_resumed = _lifecycle_ask(agent, resume_question, "execution (resume)")
+    if answer_resumed is None:
+        _restore_lifecycle(agent, original_fsm, original_task)
+        return
+
+    print_llm_response(answer_resumed)
+    _wait_for_user()
+
+    # ── Шаг 8: Переход в VALIDATION ───────────────────────────────────────────
+    console.rule("[bold green]Шаг 8: Валидация результата[/bold green]")
+    console.print("[dim]→ /task fsm next «реализация завершена»[/dim]\n")
+    fsm = agent.memory.advance_fsm("реализация завершена")
+    agent._save_state()
+    print_task_fsm(fsm)
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.VALIDATION],
+            title="[dim]Stage-промпт VALIDATION — ассистент критически проверяет[/dim]",
+            border_style="magenta",
+            padding=(0, 1),
+        )
+    )
+
+    validation_question = (
+        f"По задаче «{_LIFECYCLE_TASK}»: проверь план и реализацию. "
+        "Дай вердикт: принять / доработать / отклонить — с кратким обоснованием."
+    )
+    console.print(f"[bold]Вопрос:[/bold] {validation_question}\n")
+    answer_validation = _lifecycle_ask(agent, validation_question, "validation")
+    if answer_validation is None:
+        _restore_lifecycle(agent, original_fsm, original_task)
+        return
+
+    print_llm_response(answer_validation)
+    agent.memory.add_fsm_artifact("вердикт", answer_validation[:200])
+    agent._save_state()
+    console.print("[dim]→ вердикт сохранён как артефакт[/dim]\n")
+    _wait_for_user()
+
+    # ── Шаг 9: DONE ───────────────────────────────────────────────────────────
+    console.rule("[bold green]Шаг 9: Задача завершена[/bold green]")
+    console.print("[dim]→ /task fsm next «валидация пройдена»[/dim]\n")
+    fsm = agent.memory.advance_fsm("валидация пройдена")
+    agent._save_state()
+    print_task_fsm(fsm)
+    console.print("[green]Stage-промпт больше не инжектируется. Задача закрыта.[/green]\n")
+
+    # Попытка перехода из DONE
+    console.print("[dim]Проверяем: можно ли что-то сделать после done?[/dim]")
+    console.print("[bold yellow]→ /task fsm goto planning[/bold yellow]")
+    try:
+        agent.memory.goto_fsm(TaskStage.PLANNING)
+        console.print("[bold red]ОШИБКА[/bold red]")
+    except ForbiddenTransitionError as e:
+        print_fsm_transition_error(e)
+
+    _wait_for_user()
+
+    # ── Итоговое сравнение ────────────────────────────────────────────────────
+    _print_lifecycle_summary(answer_planning, answer_execution, answer_resumed, answer_validation)
+
+    _restore_lifecycle(agent, original_fsm, original_task)
+
+
+def _lifecycle_ask(agent: Agent, question: str, stage_label: str) -> str | None:
+    """Отправить запрос к LLM с обработкой ошибок."""
+    with console.status(
+        f"[bold cyan]{stage_label}: думаю...[/bold cyan]", spinner="dots"
+    ):
+        try:
+            answer, stats = _run_demo_request_with_retry(agent, question)
+            print_chat_turn_stats(stats)
+            return answer
+        except Exception as e:
+            print_error(f"Ошибка API ({stage_label}): {e}")
+            return None
+
+
+def _restore_lifecycle(agent: Agent, original_fsm: object, original_task: str) -> None:
+    from .task_fsm import TaskFSM
+    agent.memory.clear_fsm()
+    if original_fsm is not None and isinstance(original_fsm, TaskFSM):
+        agent.memory.working.task_fsm = original_fsm
+    if original_task:
+        agent.memory.set_task(original_task)
+    agent.clear_history()
+    agent._save_state()
+
+
+def _print_lifecycle_summary(
+    planning: str,
+    execution: str,
+    resumed: str,
+    validation: str,
+) -> None:
+    console.rule("[bold cyan]ИТОГ: Demo FSM Lifecycle[/bold cyan]")
+    console.print()
+
+    table = Table(
+        title="Один вопрос — разные этапы — разные ответы",
+        show_lines=True,
+    )
+    table.add_column("Этап", style="bold", min_width=22)
+    table.add_column("Роль ассистента", min_width=22)
+    table.add_column("Краткий ответ", min_width=50)
+
+    def _snippet(text: str) -> str:
+        line = " ".join(text.split())
+        return line[:200] + ("…" if len(line) > 200 else "")
+
+    rows = [
+        ("[yellow]Планирование[/yellow]",         "планирует, не реализует",  _snippet(planning)),
+        ("[cyan]Реализация[/cyan]",               "конкретные действия, код", _snippet(execution)),
+        ("[cyan]Реализация (resume)[/cyan]",      "продолжает с того места",  _snippet(resumed)),
+        ("[magenta]Валидация[/magenta]",          "проверяет, даёт вердикт",  _snippet(validation)),
+    ]
+    for stage, role, snippet in rows:
+        table.add_row(stage, role, snippet)
+
+    console.print(table)
+    console.print()
+    console.print(
+        "[dim]Выводы:\n"
+        "  • FSM не даёт ассистенту «перепрыгнуть» этап — переходы блокируются кодом\n"
+        "  • Один и тот же вопрос → принципиально разные ответы в зависимости от этапа\n"
+        "  • Пауза убирает ограничения → resume точно восстанавливает контекст\n"
+        "  • LLM не решает когда переходить — это делает только пользователь через next[/dim]"
+    )
+    console.print()
+
+
+def _run_demo_fsm_guards_standalone(agent: Agent) -> None:
+    """Отдельное демо защиты FSM-переходов — без API-запросов.
+
+    Показывает весь жизненный цикл FSM-защиты шаг за шагом:
+    1. Допустимые состояния и цепочка
+    2. Блокировки прямых переходов (goto) из PLANNING
+    3. Пауза и повторная пауза
+    4. resume → корректное возобновление с того же этапа
+    5. Блокировки обратных переходов из EXECUTION
+    6. Блокировки из DONE
+    7. Итоговая таблица всех переходов
+    """
+    from .task_fsm import (
+        ALLOWED_TRANSITIONS,
+        ForbiddenTransitionError,
+        STAGE_SYSTEM_PROMPTS,
+        TaskStage,
+    )
+
+    original_fsm = agent.memory.get_fsm()
+    original_task = agent.memory.working.task
+    agent.memory.clear_fsm()
+    agent._save_state()
+
+    console.print()
+    console.print(
+        Panel(
+            "[bold]Demo: FSM Lifecycle Control[/bold]\n\n"
+            "Демонстрация контролируемого жизненного цикла задачи.\n"
+            "API-запросы не отправляются — только чистая логика FSM.\n\n"
+            "Цепочка этапов:\n"
+            "  [yellow]Планирование[/yellow]  →  [cyan]Реализация[/cyan]  →  [magenta]Валидация[/magenta]  →  [green]Завершено[/green]\n\n"
+            "Правила:\n"
+            "  • Переходить только вперёд через [yellow]/task fsm next[/yellow]\n"
+            "  • Нельзя прыгать через этапы — FSM блокирует попытку\n"
+            "  • Пауза сохраняет этап, resume — возвращает точно на него\n"
+            "  • [yellow]/task fsm goto <этап>[/yellow] — всегда блокируется (демо защиты)",
+            title="[bold cyan]FSM Lifecycle Control[/bold cyan]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    console.print()
+    _wait_for_user("Нажмите Enter чтобы начать демо...")
+
+    # ── Шаг 1: Запуск FSM — показываем начальное состояние ───────────────────
+    console.rule("[bold yellow]Шаг 1: Запуск задачи[/bold yellow]")
+    console.print(
+        "[dim]Команда: /task fsm start «Разработать модуль авторизации»[/dim]\n"
+    )
+    fsm = agent.memory.start_fsm("Разработать модуль авторизации")
+    agent._save_state()
+    print_task_fsm(fsm)
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.PLANNING],
+            title="[dim]system-промпт этапа PLANNING (инжектируется в каждый запрос LLM)[/dim]",
+            border_style="yellow",
+            padding=(0, 1),
+        )
+    )
+    _wait_for_user()
+
+    # ── Шаг 2: Попытки запрещённых переходов из PLANNING ─────────────────────
+    console.rule("[bold red]Шаг 2: Попытки прыгнуть через этапы из PLANNING[/bold red]")
+    console.print(
+        "[dim]Пробуем вызвать /task fsm goto для разных этапов напрямую.\n"
+        "FSM должен заблокировать каждую попытку с объяснением.[/dim]\n"
+    )
+
+    jump_attempts = [
+        (TaskStage.EXECUTION,  "/task fsm goto execution  ← нельзя без завершённого плана"),
+        (TaskStage.VALIDATION, "/task fsm goto validation ← нельзя без реализации"),
+        (TaskStage.DONE,       "/task fsm goto done       ← нельзя пропустить все этапы"),
+    ]
+
+    for target, cmd_label in jump_attempts:
+        console.print(f"[bold yellow]→ {cmd_label}[/bold yellow]")
+        try:
+            agent.memory.goto_fsm(target)
+            console.print("[bold red]ОШИБКА: переход не должен был выполниться![/bold red]")
+        except ForbiddenTransitionError as e:
+            print_fsm_transition_error(e)
+
+    print_task_fsm(agent.memory.get_fsm())  # этап не изменился
+    _wait_for_user()
+
+    # ── Шаг 3: Пауза и повторная пауза ───────────────────────────────────────
+    console.rule("[bold magenta]Шаг 3: Пауза и попытка повторной паузы[/bold magenta]")
+    console.print(
+        "[dim]Команда: /task fsm pause — разрешена из любого активного этапа.\n"
+        "При паузе stage-промпт убирается: LLM отвечает свободно.\n"
+        "Повторная пауза — запрещена.[/dim]\n"
+    )
+
+    console.print("[bold yellow]→ /task fsm pause  (первая пауза — должна пройти)[/bold yellow]")
+    fsm = agent.memory.pause_fsm()
+    agent._save_state()
+    print_task_fsm(fsm)
+
+    console.print("[bold yellow]→ /task fsm pause  (повторная — должна быть заблокирована)[/bold yellow]")
+    try:
+        agent.memory.pause_fsm()
+        console.print("[bold red]ОШИБКА: повторная пауза не должна работать![/bold red]")
+    except ValueError as e:
+        console.print(
+            Panel(
+                f"[red]{e}[/red]\n\n[dim]Подсказка: FSM уже на паузе — нечего ставить на паузу ещё раз.[/dim]",
+                title="[bold red]Переход заблокирован[/bold red]",
+                border_style="red",
+                padding=(0, 1),
+            )
+        )
+        console.print()
+
+    _wait_for_user()
+
+    # ── Шаг 4: Resume — возврат на правильный этап ───────────────────────────
+    console.rule("[bold cyan]Шаг 4: resume — возобновление с сохранённого этапа[/bold cyan]")
+    console.print(
+        "[dim]Команда: /task fsm resume — возвращает FSM на этап, где была пауза.\n"
+        "Никаких объяснений заново — контекст сохранён в FSM.[/dim]\n"
+    )
+
+    console.print("[bold yellow]→ /task fsm resume[/bold yellow]")
+    fsm = agent.memory.resume_fsm()
+    agent._save_state()
+    print_task_fsm(fsm)
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.PLANNING],
+            title="[dim]stage-промпт PLANNING вернулся автоматически[/dim]",
+            border_style="yellow",
+            padding=(0, 1),
+        )
+    )
+    _wait_for_user()
+
+    # ── Шаг 5: Корректный переход PLANNING → EXECUTION через next ─────────────
+    console.rule("[bold cyan]Шаг 5: Корректный переход через /task fsm next[/bold cyan]")
+    console.print(
+        "[dim]Команда: /task fsm next — единственный способ перейти вперёд.\n"
+        "Переход сопровождается заменой stage-промпта.[/dim]\n"
+    )
+
+    console.print("[bold yellow]→ /task fsm next «план утверждён»[/bold yellow]")
+    fsm = agent.memory.advance_fsm("план утверждён")
+    agent._save_state()
+    print_task_fsm(fsm)
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.EXECUTION],
+            title="[dim]stage-промпт сменился на EXECUTION[/dim]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+    _wait_for_user()
+
+    # ── Шаг 6: Попытки обратных переходов из EXECUTION ───────────────────────
+    console.rule("[bold red]Шаг 6: Нельзя вернуться назад или прыгнуть вперёд из EXECUTION[/bold red]")
+    console.print(
+        "[dim]Нельзя вернуться к планированию — только вперёд.\n"
+        "Нельзя прыгнуть в done — сначала должна быть валидация.[/dim]\n"
+    )
+
+    back_attempts = [
+        (TaskStage.PLANNING,   "/task fsm goto planning  ← нельзя вернуться назад"),
+        (TaskStage.DONE,       "/task fsm goto done      ← нельзя пропустить validation"),
+    ]
+
+    for target, cmd_label in back_attempts:
+        console.print(f"[bold yellow]→ {cmd_label}[/bold yellow]")
+        try:
+            agent.memory.goto_fsm(target)
+            console.print("[bold red]ОШИБКА: переход не должен был выполниться![/bold red]")
+        except ForbiddenTransitionError as e:
+            print_fsm_transition_error(e)
+
+    _wait_for_user()
+
+    # ── Шаг 7: Проходим execution → validation → done ────────────────────────
+    console.rule("[bold green]Шаг 7: Финальная цепочка execution → validation → done[/bold green]")
+    console.print("[dim]Проходим оставшиеся этапы через /task fsm next.[/dim]\n")
+
+    console.print("[bold yellow]→ /task fsm next «реализация завершена»[/bold yellow]")
+    fsm = agent.memory.advance_fsm("реализация завершена")
+    agent._save_state()
+    print_task_fsm(fsm)
+
+    console.print(
+        Panel(
+            STAGE_SYSTEM_PROMPTS[TaskStage.VALIDATION],
+            title="[dim]stage-промпт VALIDATION — агент проверяет результат[/dim]",
+            border_style="magenta",
+            padding=(0, 1),
+        )
+    )
+
+    console.print()
+    console.print("[bold yellow]→ /task fsm next «валидация пройдена»[/bold yellow]")
+    fsm = agent.memory.advance_fsm("валидация пройдена")
+    agent._save_state()
+    print_task_fsm(fsm)
+    console.print("[green]Stage-промпт больше не инжектируется — задача завершена.[/green]\n")
+    _wait_for_user()
+
+    # ── Шаг 8: Попытки переходов из DONE ─────────────────────────────────────
+    console.rule("[bold red]Шаг 8: Попытки переходов из завершённой задачи[/bold red]")
+    console.print(
+        "[dim]Задача завершена — никакие переходы больше невозможны.[/dim]\n"
+    )
+
+    done_attempts = [
+        (TaskStage.PLANNING,   "/task fsm goto planning"),
+        (TaskStage.EXECUTION,  "/task fsm goto execution"),
+        (TaskStage.VALIDATION, "/task fsm goto validation"),
+    ]
+
+    for target, cmd_label in done_attempts:
+        console.print(f"[bold yellow]→ {cmd_label}[/bold yellow]")
+        try:
+            agent.memory.goto_fsm(target)
+            console.print("[bold red]ОШИБКА: переход не должен был выполниться![/bold red]")
+        except ForbiddenTransitionError as e:
+            print_fsm_transition_error(e)
+
+    try:
+        agent.memory.pause_fsm()
+        console.print("[bold red]ОШИБКА: пауза из done не должна работать![/bold red]")
+    except ValueError as e:
+        console.print(f"[dim]→ /task fsm pause из done: заблокировано ({e})[/dim]\n")
+
+    _wait_for_user()
+
+    # ── Итоговая таблица ──────────────────────────────────────────────────────
+    _print_demo_fsm_guards_summary()
+
+    # Восстановить исходное состояние
+    from .task_fsm import TaskFSM
+    agent.memory.clear_fsm()
+    if original_fsm is not None and isinstance(original_fsm, TaskFSM):
+        agent.memory.working.task_fsm = original_fsm
+    if original_task:
+        agent.memory.set_task(original_task)
+    agent._save_state()
+
+
+def _wait_for_user(prompt: str = "Нажмите Enter для следующего шага...") -> None:
+    """Пауза для записи видео — ждёт Enter от пользователя."""
+    console.print(f"[dim]{prompt}[/dim]")
+    try:
+        input()
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+def _print_demo_fsm_guards_summary() -> None:
+    """Итоговая таблица всех FSM-переходов: разрешённые и заблокированные."""
+    console.rule("[bold cyan]ИТОГ: Demo FSM Guards[/bold cyan]")
+    console.print()
+
+    table = Table(
+        title="Все переходы FSM: разрешённые и заблокированные",
+        show_lines=True,
+    )
+    table.add_column("Откуда", style="bold", min_width=14)
+    table.add_column("Команда", min_width=26)
+    table.add_column("Куда", min_width=14)
+    table.add_column("Статус", justify="center", min_width=16)
+    table.add_column("Метод", min_width=20)
+
+    rows = [
+        ("Планирование",  "/task fsm next",               "Реализация",  "[bold green]✓ разрешён[/bold green]",     "advance()"),
+        ("Реализация",    "/task fsm next",               "Валидация",   "[bold green]✓ разрешён[/bold green]",     "advance()"),
+        ("Валидация",     "/task fsm next",               "Завершено",   "[bold green]✓ разрешён[/bold green]",     "advance()"),
+        ("Планирование",  "/task fsm pause",              "Пауза",       "[bold green]✓ разрешён[/bold green]",     "pause()"),
+        ("Реализация",    "/task fsm pause",              "Пауза",       "[bold green]✓ разрешён[/bold green]",     "pause()"),
+        ("Валидация",     "/task fsm pause",              "Пауза",       "[bold green]✓ разрешён[/bold green]",     "pause()"),
+        ("Пауза",         "/task fsm resume",             "← этап до",   "[bold green]✓ разрешён[/bold green]",     "resume()"),
+        ("",              "",                             "",             "",                                         ""),
+        ("Планирование",  "/task fsm goto execution",     "Реализация",  "[bold red]✗ заблокирован[/bold red]",     "goto() → ERROR"),
+        ("Планирование",  "/task fsm goto validation",    "Валидация",   "[bold red]✗ заблокирован[/bold red]",     "goto() → ERROR"),
+        ("Планирование",  "/task fsm goto done",          "Завершено",   "[bold red]✗ заблокирован[/bold red]",     "goto() → ERROR"),
+        ("Реализация",    "/task fsm goto planning",      "Планирование","[bold red]✗ заблокирован[/bold red]",     "goto() → ERROR"),
+        ("Реализация",    "/task fsm goto done",          "Завершено",   "[bold red]✗ заблокирован[/bold red]",     "goto() → ERROR"),
+        ("Пауза",         "/task fsm pause",              "Пауза",       "[bold red]✗ заблокирован[/bold red]",     "pause() → ERROR"),
+        ("Завершено",     "любой переход",                "—",           "[bold red]✗ заблокирован[/bold red]",     "все → ERROR"),
+    ]
+
+    for from_s, cmd, to_s, status, method in rows:
+        if not from_s:
+            table.add_section()
+        else:
+            table.add_row(
+                f"[dim]{from_s}[/dim]" if not from_s else from_s,
+                f"[yellow]{cmd}[/yellow]" if cmd else "",
+                to_s,
+                status,
+                f"[dim]{method}[/dim]",
+            )
+
+    console.print(table)
+    console.print()
+    console.print(
+        "[dim]Ключевые принципы:\n"
+        "  • Переходы только вперёд: planning → execution → validation → done\n"
+        "  • Единственный способ перейти — /task fsm next (advance)\n"
+        "  • /task fsm goto всегда блокируется — нет «прямого доступа» к этапу\n"
+        "  • Пауза сохраняет контекст; resume возвращает ровно на тот же этап\n"
+        "  • Из DONE выхода нет — только /task fsm start для новой задачи\n\n"
+        "Команды:\n"
+        "  /task fsm start <имя>     — запустить\n"
+        "  /task fsm next [заметка]  — следующий этап\n"
+        "  /task fsm pause / resume  — пауза и возобновление\n"
+        "  /task fsm goto <этап>     — попытка (всегда заблокирована — показывает причину)\n"
+        "  /task fsm status          — текущее состояние[/dim]"
+    )
+    console.print()
+
+
 # Тема задачи для всего демо-сценария
 _DEMO_FSM_TASK = "Реализовать REST-эндпоинт для экспорта отчёта в PDF"
 
@@ -1750,7 +2612,8 @@ def _run_demo_fsm(agent: Agent) -> None:
     console.print(
         "[dim]Жизненный цикл: planning → execution → validation → done\n"
         "Один и тот же вопрос — принципиально разные ответы в каждом этапе.\n"
-        "Будет выполнено ~6 API-запросов. Нажмите Ctrl+C для отмены.[/dim]\n"
+        "Шаг 0: проверка защиты от недопустимых переходов (без API-запросов).\n"
+        "Шаги 1–6: полный прогон с ~6 API-запросами. Нажмите Ctrl+C для отмены.[/dim]\n"
     )
 
     # Сохраняем исходное состояние, чтобы восстановить после демо
@@ -1760,6 +2623,9 @@ def _run_demo_fsm(agent: Agent) -> None:
     agent.clear_history()
     agent.memory.clear_fsm()
     agent._save_state()
+
+    # ── Шаг 0: проверка защиты от недопустимых переходов ─────────────────────
+    _run_demo_fsm_guards(agent)
 
     results: list[dict[str, object]] = []
 

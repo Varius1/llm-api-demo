@@ -52,6 +52,93 @@ ALLOWED_TRANSITIONS: set[tuple[TaskStage, TaskStage]] = {
     # PAUSED → любой этап из STAGE_CHAIN — обрабатывается через resume()
 }
 
+# Причины блокировки конкретных недопустимых переходов.
+# Ключ: (from_stage, to_stage) — строковое сообщение + подсказка что делать.
+# Включает как полностью запрещённые переходы, так и переходы запрещённые для goto().
+TRANSITION_BLOCK_REASONS: dict[tuple[TaskStage, TaskStage], tuple[str, str]] = {
+    # Прямые переходы вперёд через goto — разрешены только через advance (next)
+    (TaskStage.PLANNING, TaskStage.EXECUTION): (
+        "Нельзя перейти к реализации напрямую — план должен быть явно завершён.",
+        "Используйте /task fsm next чтобы подтвердить завершение планирования.",
+    ),
+    (TaskStage.PLANNING, TaskStage.VALIDATION): (
+        "Нельзя перейти к валидации без завершённой реализации.",
+        "Следуйте цепочке: planning → execution → validation → done",
+    ),
+    (TaskStage.PLANNING, TaskStage.DONE): (
+        "Нельзя завершить задачу, не пройдя реализацию и валидацию.",
+        "Следуйте цепочке: planning → execution → validation → done",
+    ),
+    (TaskStage.EXECUTION, TaskStage.VALIDATION): (
+        "Нельзя перейти к валидации напрямую — реализация должна быть явно завершена.",
+        "Используйте /task fsm next чтобы подтвердить завершение реализации.",
+    ),
+    (TaskStage.EXECUTION, TaskStage.DONE): (
+        "Нельзя завершить задачу без валидации.",
+        "Следуйте цепочке: execution → validation → done",
+    ),
+    (TaskStage.EXECUTION, TaskStage.PLANNING): (
+        "Нельзя вернуться назад по цепочке этапов.",
+        "Переходы возможны только вперёд. Если план нужно скорректировать — сообщите пользователю.",
+    ),
+    (TaskStage.VALIDATION, TaskStage.DONE): (
+        "Нельзя завершить задачу напрямую — валидация должна быть явно завершена.",
+        "Используйте /task fsm next чтобы подтвердить вердикт валидации.",
+    ),
+    (TaskStage.VALIDATION, TaskStage.PLANNING): (
+        "Нельзя вернуться к планированию с этапа валидации.",
+        "Переходы возможны только вперёд. Завершите валидацию: /task fsm next",
+    ),
+    (TaskStage.VALIDATION, TaskStage.EXECUTION): (
+        "Нельзя вернуться к реализации с этапа валидации.",
+        "Если требуется доработка — зафиксируйте это в артефакте и завершите: /task fsm next",
+    ),
+    (TaskStage.DONE, TaskStage.PLANNING): (
+        "Задача уже завершена. Нельзя вернуться к планированию.",
+        "Запустите новую задачу: /task fsm start <имя>",
+    ),
+    (TaskStage.DONE, TaskStage.EXECUTION): (
+        "Задача уже завершена. Нельзя вернуться к реализации.",
+        "Запустите новую задачу: /task fsm start <имя>",
+    ),
+    (TaskStage.DONE, TaskStage.VALIDATION): (
+        "Задача уже завершена. Нельзя вернуться к валидации.",
+        "Запустите новую задачу: /task fsm start <имя>",
+    ),
+    (TaskStage.DONE, TaskStage.PAUSED): (
+        "Задача завершена, пауза невозможна.",
+        "Запустите новую задачу: /task fsm start <имя>",
+    ),
+    (TaskStage.PAUSED, TaskStage.DONE): (
+        "Нельзя завершить задачу напрямую из паузы.",
+        "Сначала возобновите задачу: /task fsm resume, затем продолжайте по цепочке.",
+    ),
+}
+
+
+class ForbiddenTransitionError(ValueError):
+    """Исключение при попытке выполнить недопустимый переход между этапами FSM."""
+
+    def __init__(
+        self,
+        from_stage: TaskStage,
+        to_stage: TaskStage,
+        reason: str = "",
+        hint: str = "",
+    ) -> None:
+        self.from_stage = from_stage
+        self.to_stage = to_stage
+        self.reason = reason or "Переход не разрешён."
+        self.hint = hint or "Используйте /task fsm next для последовательного перехода."
+        from_label = STAGE_LABELS.get(from_stage, from_stage.value)
+        to_label = STAGE_LABELS.get(to_stage, to_stage.value)
+        message = (
+            f"Недопустимый переход: «{from_label}» → «{to_label}».\n"
+            f"{self.reason}\n"
+            f"Подсказка: {self.hint}"
+        )
+        super().__init__(message)
+
 # System-промпты, инжектируемые агентом при каждом запросе к LLM.
 # PAUSED и DONE намеренно отсутствуют — при этих статусах промпт не инжектируется.
 STAGE_SYSTEM_PROMPTS: dict[TaskStage, str] = {
@@ -164,6 +251,30 @@ class TaskFSM(BaseModel):
         restore = TaskStage(self.paused_at)
         self._record_transition(restore)
         self.paused_at = ""
+
+    def goto(self, target: TaskStage, note: str = "") -> None:
+        """Явный переход в указанный этап — всегда блокируется для прямых переходов.
+
+        Метод намеренно запрещает прямое указание целевого этапа пользователем:
+        переходы выполняются только через advance() (next), pause() и resume().
+        Любая попытка goto() выбрасывает ForbiddenTransitionError с объяснением.
+
+        Используется командой /task fsm goto для демонстрации защиты FSM.
+        """
+        if self.stage == target:
+            raise ForbiddenTransitionError(
+                self.stage,
+                target,
+                reason=f"Задача уже находится на этапе «{STAGE_LABELS.get(target, target.value)}».",
+                hint="Используйте /task fsm next для перехода к следующему этапу.",
+            )
+
+        pair = (self.stage, target)
+        reason, hint = TRANSITION_BLOCK_REASONS.get(pair, (
+            "Прямые переходы через goto запрещены.",
+            "Используйте /task fsm next, /task fsm pause или /task fsm resume.",
+        ))
+        raise ForbiddenTransitionError(self.stage, target, reason=reason, hint=hint)
 
     def add_artifact(self, key: str, text: str) -> None:
         """Сохранить артефакт текущего этапа."""

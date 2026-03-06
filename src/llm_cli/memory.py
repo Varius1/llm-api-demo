@@ -10,7 +10,7 @@ from pathlib import Path
 from platformdirs import user_config_dir
 from pydantic import BaseModel, Field
 
-from .task_fsm import TaskFSM, TaskStage
+from .task_fsm import ForbiddenTransitionError, TaskFSM, TaskStage
 
 APP_NAME = "llm-cli"
 LONG_TERM_FILENAME = "long_term_memory.json"
@@ -376,6 +376,15 @@ class MemoryManager:
         """Возобновить FSM с сохранённого этапа."""
         fsm = self._require_fsm()
         fsm.resume()
+        return fsm
+
+    def goto_fsm(self, target: TaskStage, note: str = "") -> TaskFSM:
+        """Явный переход FSM в указанный этап с проверкой допустимости.
+
+        Выбрасывает ForbiddenTransitionError если переход не разрешён.
+        """
+        fsm = self._require_fsm()
+        fsm.goto(target, note)
         return fsm
 
     def add_fsm_artifact(self, key: str, text: str) -> TaskFSM:
