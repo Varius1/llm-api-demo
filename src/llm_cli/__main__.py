@@ -7,7 +7,7 @@ import sys
 
 from .api import OpenRouterClient
 from .benchmark import run_benchmark
-from .chat import run_chat
+from .chat import run_chat, run_chat_with_tools
 from .config import ensure_config
 from .models import BENCHMARK_PROMPT
 
@@ -34,6 +34,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Температура генерации",
     )
+    parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="Подключиться к MCP-серверу и вывести список доступных инструментов",
+    )
+    parser.add_argument(
+        "--tools",
+        action="store_true",
+        help="Запустить чат с MCP tool calling (LLM сама вызывает инструменты)",
+    )
     return parser
 
 
@@ -41,7 +51,17 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    if args.mcp:
+        from .mcp_client import run_mcp_demo
+        run_mcp_demo()
+        return
+
     cfg = ensure_config()
+
+    if args.tools:
+        with OpenRouterClient(cfg.api_key) as client:
+            run_chat_with_tools(client, cfg)
+        return
 
     temperature = args.temp if args.temp is not None else cfg.temperature
 

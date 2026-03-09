@@ -41,6 +41,38 @@ set OPENROUTER_API_KEY=sk-or-v1-ваш-ключ         # Windows CMD
 python -m llm_cli
 ```
 
+### MCP — просмотр доступных инструментов
+
+```bash
+# Подключиться к MCP-серверу и вывести список инструментов
+llm-cli --mcp
+```
+
+Запускает локальный MCP-сервер, устанавливает соединение и выводит таблицу инструментов с именами, описаниями и параметрами. Затем вызывает каждый инструмент и показывает запрос и ответ.
+
+### MCP + LLM Tool Calling — чат с инструментами
+
+```bash
+# Чат, в котором LLM сама вызывает MCP-инструменты
+llm-cli --tools
+```
+
+LLM получает список доступных инструментов и сама решает когда их использовать. Пример:
+
+```
+Вы: какая погода в Москве?
+
+  → LLM запрос #1 (инструментов: 3)
+  [MCP] LLM вызывает: get_weather(city="Москва")
+  [MCP] ← get_weather: Пасмурно, -3°C, ветер 5 м/с
+  → LLM запрос #2 (инструментов: 3)
+  ✓ Финальный ответ получен
+
+  В Москве пасмурно, температура -3°C, ветер 5 м/с.
+```
+
+Если вопрос не требует инструмента — LLM отвечает напрямую как в обычном чате.
+
 ### Бенчмарк моделей
 
 ```bash
@@ -367,14 +399,54 @@ python -m llm_cli
 
 Когда активен не-дефолтный профиль, агент автоматически добавляет его как отдельное `system`-сообщение в каждый запрос к LLM (до блока памяти). Поэтому переключение `/profile switch` сразу меняет стиль и подачу ответов без перезапуска CLI.
 
+## MCP-интеграция (Model Context Protocol)
+
+Проект включает локальный MCP-сервер и клиент, реализующие полный цикл tool calling.
+
+### Как работает
+
+```
+llm-cli --tools
+    │
+    ├─ запускает mcp_server.py как subprocess (stdio-транспорт)
+    ├─ initialize() + list_tools() — один раз при старте
+    │
+    │  [пользователь: "какая погода в Москве?"]
+    │
+    ├─ LLM запрос #1 (сообщение + схема инструментов)
+    ├─ LLM: finish_reason="tool_calls" → get_weather(city="Москва")
+    ├─ MCP call_tool → "Пасмурно, -3°C"
+    ├─ LLM запрос #2 (с результатом инструмента)
+    └─ LLM: финальный ответ пользователю
+```
+
+### Инструменты MCP-сервера
+
+| Инструмент | Описание | Параметры |
+|---|---|---|
+| `get_weather` | Погода для города (mock-данные) | `city: string` |
+| `calculate` | Вычислить математическое выражение | `expression: string` |
+| `list_models` | Список LLM-моделей из конфига | — |
+
+### Файлы
+
+| Файл | Роль |
+|---|---|
+| `mcp_server.py` | MCP-сервер с инструментами (FastMCP, stdio) |
+| `mcp_client.py` | MCP-клиент: соединение, `list_tools`, `call_tool` |
+| `agent.py` | Tool call loop: получает tool_calls от LLM, вызывает MCP, повторяет запрос |
+
 ## Архитектура
 
 ```
 CLI (chat.py)  →  Agent (agent.py)  →  HTTP-клиент (api.py)  →  OpenRouter API
    ввод/вывод      логика + история      транспорт               LLM
-                       ↓              ↓
-                  strategy.py      memory.py
-                  (4 стратегии)    (3 слоя памяти)
+                       ↓              ↓              ↓
+                  strategy.py      memory.py     mcp_client.py
+                  (4 стратегии)    (3 слоя памяти)  (tool calling)
+                                                    ↓
+                                               mcp_server.py
+                                               (инструменты)
 ```
 
 Агент (`Agent`) — отдельная сущность, инкапсулирующая логику диалога с LLM:
@@ -389,14 +461,16 @@ CLI (chat.py)  →  Agent (agent.py)  →  HTTP-клиент (api.py)  →  Open
 ```
 src/llm_cli/
   __init__.py       — пакет
-  __main__.py       — точка входа, argparse
-  agent.py          — LLM-агент (история диалога, 4 стратегии, ветки, модель памяти)
-  api.py            — HTTP-клиент OpenRouter (httpx)
+  __main__.py       — точка входа, argparse (--mcp, --tools, --compare)
+  agent.py          — LLM-агент (история диалога, 4 стратегии, ветки, модель памяти, tool calling)
+  api.py            — HTTP-клиент OpenRouter (httpx, поддержка tool calling)
   benchmark.py      — бенчмарк моделей + модель-судья
   chat.py           — интерактивный чат-цикл (команды, демо-сценарии)
   config.py         — загрузка/сохранение TOML-конфига
   display.py        — Rich-отрисовка (таблицы, панели, спиннеры)
+  mcp_client.py     — MCP-клиент: соединение, list_tools, call_tool (MCPSession)
+  mcp_server.py     — MCP-сервер: get_weather, calculate, list_models (FastMCP, stdio)
   memory.py         — 3-слойная модель памяти (WorkingMemory, LongTermMemory, MemoryManager)
-  models.py         — Pydantic-модели данных
+  models.py         — Pydantic-модели данных (включая ToolCall, ToolDefinition)
   strategy.py       — стратегии управления контекстом (Sliding Window, Sticky Facts)
 ```

@@ -76,12 +76,41 @@ DEMO_QUALITY_KEYWORDS = [
 ]
 
 
-def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
-    agent = Agent(
-        client=client,
-        model=cfg.default_model,
-        temperature=cfg.temperature,
-    )
+TOOLS_DEFAULT_MODEL = "openai/gpt-4o-mini"
+
+
+def run_chat_with_tools(client: OpenRouterClient, cfg: AppConfig) -> None:
+    """Запустить чат с MCP tool calling (async wrapper)."""
+    import asyncio
+    from .mcp_client import MCPSession
+
+    async def _main() -> None:
+        async with MCPSession() as mcp:
+            tools = mcp.get_tools_schema()
+            tool_names = [t.function.name for t in tools]
+
+            # Используем модель с поддержкой tool calling
+            tools_model = TOOLS_DEFAULT_MODEL
+            console.print(
+                f"[green]✓[/green] MCP-сервер подключён, "
+                f"инструменты: [bold cyan]{', '.join(tool_names)}[/bold cyan]"
+            )
+            console.print(
+                f"[dim]Модель: {tools_model} (поддерживает tool calling)[/dim]\n"
+            )
+            agent = Agent(
+                client=client,
+                model=tools_model,
+                temperature=cfg.temperature,
+                mcp_session=mcp,
+            )
+            await _run_chat_loop_async(agent, client, cfg)
+
+    asyncio.run(_main())
+
+
+def _run_chat_loop(agent: Agent, client: OpenRouterClient, cfg: AppConfig) -> None:
+    """Основной цикл чата — используется как из run_chat, так и из run_chat_with_tools."""
     benchmark_prompt = cfg.benchmark_prompt or BENCHMARK_PROMPT
 
     print_welcome(agent.model, agent.temperature)
@@ -229,6 +258,86 @@ def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
         try:
             with console.status("[bold cyan]Думаю...[/bold cyan]", spinner="dots"):
                 reply, stats = agent.run_with_stats(text, transforms=transforms)
+            print_llm_response(reply)
+            print_chat_turn_stats(stats)
+        except Exception as e:
+            raw_error = str(e)
+            if _looks_like_context_overflow(raw_error):
+                print_error(
+                    "Контекст модели переполнен (лимит токенов превышен). "
+                    "Очистите историю командой /clear или смените модель на более длинный контекст.\n"
+                    f"Детали API: {raw_error}"
+                )
+            else:
+                print_error(raw_error)
+
+
+def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
+    agent = Agent(
+        client=client,
+        model=cfg.default_model,
+        temperature=cfg.temperature,
+    )
+    _run_chat_loop(agent, client, cfg)
+
+
+async def _run_chat_loop_async(agent: Agent, client: OpenRouterClient, cfg: AppConfig) -> None:
+    """Async версия цикла чата для режима --tools с MCP."""
+    benchmark_prompt = cfg.benchmark_prompt or BENCHMARK_PROMPT
+
+    print_welcome(agent.model, agent.temperature)
+    if agent.restored_messages_count > 0:
+        console.print(
+            f"[dim]Восстановлено сообщений из истории: {agent.restored_messages_count}[/dim]"
+        )
+        console.print()
+    print_strategy_status(agent)
+
+    while True:
+        try:
+            lines = _read_multiline_input()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]До свидания![/dim]")
+            break
+
+        if lines is None:
+            continue
+
+        text = lines.strip()
+        if not text:
+            continue
+
+        if text.lower() in ("exit", "quit"):
+            console.print("[dim]До свидания![/dim]")
+            break
+
+        if text.startswith("/temp"):
+            _handle_temp(text, agent)
+            continue
+
+        if text.startswith("/model"):
+            _handle_model(text, agent)
+            continue
+
+        if text == "/clear":
+            agent.clear_history()
+            console.print("[green]История очищена.[/green]\n")
+            continue
+
+        if text == "/memory":
+            print_memory_state(agent.memory, agent.history)
+            continue
+
+        if text == "/compare":
+            console.print()
+            run_benchmark(client, benchmark_prompt, cfg.models, agent.temperature)
+            continue
+
+        transforms: list[str] | None = None
+
+        try:
+            with console.status("[bold cyan]Думаю...[/bold cyan]", spinner="dots"):
+                reply, stats = await agent.run_with_stats_async(text, transforms=transforms)
             print_llm_response(reply)
             print_chat_turn_stats(stats)
         except Exception as e:

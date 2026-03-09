@@ -6,6 +6,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from platformdirs import user_config_dir
 
@@ -22,6 +23,9 @@ from .models import (
     calculate_usage_cost_usd,
 )
 from .strategy import build_facts_block, build_sliding_window, extract_facts
+
+if TYPE_CHECKING:
+    from .mcp_client import MCPSession
 
 APP_NAME = "llm-cli"
 HISTORY_FILENAME = "history.json"
@@ -61,6 +65,7 @@ class Agent:
         keep_last_n: int = DEFAULT_KEEP_LAST_N,
         summarize_every: int = DEFAULT_SUMMARIZE_EVERY,
         min_messages_for_summary: int = DEFAULT_MIN_MESSAGES_FOR_SUMMARY,
+        mcp_session: MCPSession | None = None,
     ) -> None:
         self._client = client
         self._model = model
@@ -96,6 +101,8 @@ class Agent:
 
         self._load_state()
         self._restored_messages_count = len(self._raw_history)
+
+        self._mcp_session: MCPSession | None = mcp_session
 
         # Метрики сессии.
         self._session_prompt_tokens = 0
@@ -215,6 +222,10 @@ class Agent:
         reply, _ = self.run_with_stats(user_input, transforms=transforms)
         return reply
 
+    async def run_async(self, user_input: str, transforms: list[str] | None = None) -> str:
+        reply, _ = await self.run_with_stats_async(user_input, transforms=transforms)
+        return reply
+
     def run_with_stats(
         self, user_input: str, transforms: list[str] | None = None
     ) -> tuple[str, ChatTurnStats]:
@@ -236,12 +247,13 @@ class Agent:
         raw_history_tokens_estimated = _estimate_messages_tokens(self._raw_history)
         sent_history_tokens_estimated = _estimate_messages_tokens(messages_for_request)
 
+        tools = self._mcp_session.get_tools_schema() if self._mcp_session else None
+
         try:
-            reply, usage = self._client.send_with_usage(
+            reply, usage = self._run_with_tool_loop(
                 messages_for_request,
-                self._model,
-                self._temperature,
                 transforms=transforms,
+                tools=tools,
             )
         except Exception:
             self._raw_history.pop()
@@ -261,6 +273,222 @@ class Agent:
         )
         self._last_turn_stats = stats
         return reply, stats
+
+    async def run_with_stats_async(
+        self, user_input: str, transforms: list[str] | None = None
+    ) -> tuple[str, ChatTurnStats]:
+        """Async версия run_with_stats — используется когда активна MCP-сессия."""
+        user_message = ChatMessage(role="user", content=user_input)
+        self._raw_history.append(user_message)
+        previous_summary = self._summary_text
+        previous_summary_source = self._summary_source_messages
+
+        self._memory.update_working_from_message(user_input)
+        if self._strategy == StrategyType.STICKY_FACTS:
+            self._facts = extract_facts(user_input, self._facts)
+
+        request_tokens_estimated = _estimate_text_tokens(user_input)
+        messages_for_request, compression_meta = self._build_messages_for_request()
+        raw_history_tokens_estimated = _estimate_messages_tokens(self._raw_history)
+        sent_history_tokens_estimated = _estimate_messages_tokens(messages_for_request)
+
+        tools = self._mcp_session.get_tools_schema() if self._mcp_session else None
+
+        try:
+            reply, usage = await self._run_with_tool_loop_async(
+                messages_for_request,
+                transforms=transforms,
+                tools=tools,
+            )
+        except Exception:
+            self._raw_history.pop()
+            self._summary_text = previous_summary
+            self._summary_source_messages = previous_summary_source
+            raise
+
+        self._raw_history.append(ChatMessage(role="assistant", content=reply))
+        self._save_state()
+
+        stats = self._build_turn_stats(
+            usage=usage,
+            request_tokens_estimated=request_tokens_estimated,
+            raw_history_tokens_estimated=raw_history_tokens_estimated,
+            sent_history_tokens_estimated=sent_history_tokens_estimated,
+            compression_meta=compression_meta,
+        )
+        self._last_turn_stats = stats
+        return reply, stats
+
+    def _run_with_tool_loop(
+        self,
+        messages: list[ChatMessage],
+        transforms: list[str] | None,
+        tools: list | None,
+    ) -> tuple[str, TokenUsage | None]:
+        """Отправить запрос в LLM с поддержкой tool calling loop."""
+        from rich.console import Console
+        from rich.text import Text
+
+        _console = Console()
+
+        loop_messages = list(messages)
+        last_usage: TokenUsage | None = None
+        max_iterations = 10
+
+        for iteration in range(max_iterations):
+            if self._mcp_session and tools:
+                _console.print(
+                    f"  [dim cyan]→ LLM запрос #{iteration + 1} "
+                    f"(инструментов: {len(tools)})[/dim cyan]"
+                )
+
+            chat_response = self._client.send_raw(
+                loop_messages,
+                self._model,
+                self._temperature,
+                transforms=transforms,
+                tools=tools if tools else None,
+            )
+
+            if chat_response.error is not None:
+                raise RuntimeError(f"API ошибка: {chat_response.error.message}")
+            if not chat_response.choices:
+                raise RuntimeError("Нет ответа в choices")
+
+            last_usage = chat_response.usage
+            choice = chat_response.choices[0]
+            finish_reason = choice.finish_reason
+            msg = choice.message
+
+            # Нет tool calls — финальный ответ
+            if finish_reason != "tool_calls" or not msg.tool_calls:
+                if self._mcp_session and tools:
+                    _console.print("  [dim green]✓ Финальный ответ получен[/dim green]")
+                return msg.content or "", last_usage
+
+            # Показываем какие tool calls запросила модель
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    args = {}
+                args_str = ", ".join(f'{k}="{v}"' for k, v in args.items())
+                _console.print(
+                    Text.assemble(
+                        ("  [MCP] ", "bold yellow"),
+                        ("LLM вызывает: ", "dim"),
+                        (f"{tc.function.name}({args_str})", "bold white"),
+                    )
+                )
+
+            # Добавляем assistant-сообщение с tool_calls в временный контекст
+            loop_messages.append(ChatMessage(
+                role="assistant",
+                content=msg.content,
+                tool_calls=msg.tool_calls,
+            ))
+
+            # Вызываем каждый инструмент через MCP (синхронно, в отдельном потоке)
+            assert self._mcp_session is not None
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    args = {}
+                tool_result = self._mcp_session.call_tool_sync(tc.function.name, args)
+                _console.print(f"  [dim][MCP] ← {tc.function.name}: {tool_result}[/dim]")
+                loop_messages.append(ChatMessage(
+                    role="tool",
+                    content=tool_result,
+                    tool_call_id=tc.id,
+                    name=tc.function.name,
+                ))
+
+        # Если вышли из цикла без финального ответа — последний ответ как есть
+        return loop_messages[-1].content or "", last_usage
+
+    async def _run_with_tool_loop_async(
+        self,
+        messages: list[ChatMessage],
+        transforms: list[str] | None,
+        tools: list | None,
+    ) -> tuple[str, TokenUsage | None]:
+        """Async версия tool loop — используется внутри async контекста MCP."""
+        from rich.console import Console
+        from rich.text import Text
+
+        _console = Console()
+
+        loop_messages = list(messages)
+        last_usage: TokenUsage | None = None
+        max_iterations = 10
+
+        for iteration in range(max_iterations):
+            if self._mcp_session and tools:
+                _console.print(
+                    f"  [dim cyan]→ LLM запрос #{iteration + 1} "
+                    f"(инструментов: {len(tools)})[/dim cyan]"
+                )
+
+            chat_response = self._client.send_raw(
+                loop_messages,
+                self._model,
+                self._temperature,
+                transforms=transforms,
+                tools=tools if tools else None,
+            )
+
+            if chat_response.error is not None:
+                raise RuntimeError(f"API ошибка: {chat_response.error.message}")
+            if not chat_response.choices:
+                raise RuntimeError("Нет ответа в choices")
+
+            last_usage = chat_response.usage
+            choice = chat_response.choices[0]
+            finish_reason = choice.finish_reason
+            msg = choice.message
+
+            if finish_reason != "tool_calls" or not msg.tool_calls:
+                if self._mcp_session and tools:
+                    _console.print("  [dim green]✓ Финальный ответ получен[/dim green]")
+                return msg.content or "", last_usage
+
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    args = {}
+                args_str = ", ".join(f'{k}="{v}"' for k, v in args.items())
+                _console.print(
+                    Text.assemble(
+                        ("  [MCP] ", "bold yellow"),
+                        ("LLM вызывает: ", "dim"),
+                        (f"{tc.function.name}({args_str})", "bold white"),
+                    )
+                )
+
+            loop_messages.append(ChatMessage(
+                role="assistant",
+                content=msg.content,
+                tool_calls=msg.tool_calls,
+            ))
+
+            assert self._mcp_session is not None
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    args = {}
+                tool_result = await self._mcp_session.call_tool(tc.function.name, args)
+                _console.print(f"  [dim][MCP] ← {tc.function.name}: {tool_result}[/dim]")
+                loop_messages.append(ChatMessage(
+                    role="tool",
+                    content=tool_result,
+                    tool_call_id=tc.id,
+                    name=tc.function.name,
+                ))
+
+        return loop_messages[-1].content or "", last_usage
 
     def clear_history(self) -> None:
         """Очистить историю, сохранив системный промпт (если был)."""

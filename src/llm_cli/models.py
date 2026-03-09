@@ -14,9 +14,38 @@ class StrategyType(str, Enum):
     BRANCHING = "branch"
 
 
+class ToolFunction(BaseModel):
+    """Описание функции в OpenAI tool calling формате."""
+    name: str
+    arguments: str  # JSON-строка
+
+
+class ToolCall(BaseModel):
+    """Один tool call из ответа LLM."""
+    id: str
+    type: str = "function"
+    function: ToolFunction
+
+
+class ToolDefinitionFunction(BaseModel):
+    """Описание функции при отправке tools в запросе."""
+    name: str
+    description: str = ""
+    parameters: dict = Field(default_factory=dict)
+
+
+class ToolDefinition(BaseModel):
+    """Один инструмент для передачи в LLM."""
+    type: str = "function"
+    function: ToolDefinitionFunction
+
+
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: str | None = None
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -24,6 +53,8 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     temperature: float | None = None
     transforms: list[str] | None = None
+    tools: list[ToolDefinition] | None = None
+    tool_choice: str | None = None
 
 
 class TokenUsage(BaseModel):
@@ -75,6 +106,7 @@ class ChatError(BaseModel):
 
 class ChatChoice(BaseModel):
     message: ChatMessage
+    finish_reason: str | None = None
 
 
 class ChatResponse(BaseModel):
