@@ -44,6 +44,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Запустить чат с MCP tool calling (LLM сама вызывает инструменты)",
     )
+    parser.add_argument(
+        "--agent-demo",
+        action="store_true",
+        help="Демо: агент автоматически вызывает MCP-инструменты и получает результат",
+    )
     return parser
 
 
@@ -54,6 +59,11 @@ def main() -> None:
     if args.mcp:
         from .mcp_client import run_mcp_demo
         run_mcp_demo()
+        return
+
+    if args.agent_demo:
+        from .mcp_client import run_agent_demo
+        run_agent_demo()
         return
 
     cfg = ensure_config()

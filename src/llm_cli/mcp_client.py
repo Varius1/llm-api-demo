@@ -184,3 +184,70 @@ async def _run(python_executable: str) -> None:
 def run_mcp_demo() -> None:
     python_exec = sys.executable
     asyncio.run(_run(python_exec))
+
+
+_AGENT_DEMO_PROMPT = (
+    "Используй инструмент get_crypto_price и узнай текущий курс следующих криптовалют в USD:\n"
+    "- BTC (биткоин)\n"
+    "- ETH (эфириум)\n"
+    "- SOL (солана)\n"
+    "Дай краткий итог с актуальными ценами."
+)
+
+_AGENT_DEMO_MODEL = "openai/gpt-4o-mini"
+
+
+async def _run_agent_demo(api_key: str) -> None:
+    from .agent import Agent
+    from .api import OpenRouterClient
+
+    console.print(Panel(
+        "[bold cyan]Запускаю агента с MCP-инструментами...[/bold cyan]\n"
+        "[dim]Агент автоматически вызовет инструменты и вернёт результат[/dim]",
+        border_style="cyan",
+        expand=False,
+    ))
+    console.print()
+
+    async with MCPSession() as mcp:
+        tools = mcp.get_tools_schema()
+        tool_names = [t.function.name for t in tools]
+
+        table = Table(
+            title=f"MCP-инструменты ({len(tools)})",
+            box=box.ROUNDED,
+            border_style="cyan",
+            header_style="bold magenta",
+        )
+        table.add_column("Инструмент", style="bold yellow", no_wrap=True)
+        table.add_column("Описание", style="white")
+        for t in tools:
+            table.add_row(t.function.name, t.function.description)
+        console.print(table)
+        console.print(f"[dim]Модель: {_AGENT_DEMO_MODEL}[/dim]\n")
+
+        console.print(Rule("[bold magenta]Промпт агенту[/bold magenta]", style="magenta"))
+        console.print(Panel(
+            _AGENT_DEMO_PROMPT,
+            border_style="dim",
+            expand=False,
+        ))
+        console.print()
+        console.print(Rule("[bold yellow]Tool Calling Loop[/bold yellow]", style="yellow"))
+        console.print()
+
+        with OpenRouterClient(api_key) as client:
+            agent = Agent(client=client, model=_AGENT_DEMO_MODEL, mcp_session=mcp)
+            reply = await agent.run_async(_AGENT_DEMO_PROMPT)
+
+        console.print()
+        console.print(Rule("[bold green]Финальный ответ LLM[/bold green]", style="green"))
+        console.print(Panel(reply, border_style="green", expand=False))
+
+
+def run_agent_demo() -> None:
+    """Автоматический сценарий: агент вызывает MCP-инструменты и возвращает результат."""
+    from .config import ensure_config
+
+    cfg = ensure_config()
+    asyncio.run(_run_agent_demo(cfg.api_key))

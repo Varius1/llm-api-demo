@@ -50,6 +50,34 @@ llm-cli --mcp
 
 Запускает локальный MCP-сервер, устанавливает соединение и выводит таблицу инструментов с именами, описаниями и параметрами. Затем вызывает каждый инструмент и показывает запрос и ответ.
 
+### MCP + LLM — автодемо агента с инструментами
+
+```bash
+# Агент автоматически вызывает MCP-инструменты и возвращает результат
+llm-cli --agent-demo
+```
+
+Полностью автоматический сценарий без ввода: агент получает задание, LLM сама решает какие инструменты вызвать, MCP делает реальные запросы к внешним API, результаты возвращаются в LLM и та формирует финальный ответ.
+
+Пример вывода:
+
+```
+  → LLM запрос #1 (инструментов: 4)
+  [MCP] LLM вызывает: get_crypto_price(symbol="BTC")
+  [MCP] LLM вызывает: get_crypto_price(symbol="ETH")
+  [MCP] LLM вызывает: get_crypto_price(symbol="SOL")
+  [MCP] ← get_crypto_price: BTC: $70,715 USD
+  [MCP] ← get_crypto_price: ETH: $2,065.11 USD
+  [MCP] ← get_crypto_price: SOL: $86.88 USD
+  → LLM запрос #2 (инструментов: 4)
+  ✓ Финальный ответ получен
+
+  Вот актуальные цены криптовалют в USD:
+  - BTC (биткоин): $70,715
+  - ETH (эфириум): $2,065.11
+  - SOL (солана): $86.88
+```
+
 ### MCP + LLM Tool Calling — чат с инструментами
 
 ```bash
@@ -62,10 +90,10 @@ LLM получает список доступных инструментов и
 ```
 Вы: какая погода в Москве?
 
-  → LLM запрос #1 (инструментов: 3)
+  → LLM запрос #1 (инструментов: 4)
   [MCP] LLM вызывает: get_weather(city="Москва")
   [MCP] ← get_weather: Пасмурно, -3°C, ветер 5 м/с
-  → LLM запрос #2 (инструментов: 3)
+  → LLM запрос #2 (инструментов: 4)
   ✓ Финальный ответ получен
 
   В Москве пасмурно, температура -3°C, ветер 5 м/с.
@@ -427,6 +455,7 @@ llm-cli --tools
 | `get_weather` | Погода для города (mock-данные) | `city: string` |
 | `calculate` | Вычислить математическое выражение | `expression: string` |
 | `list_models` | Список LLM-моделей из конфига | — |
+| `get_crypto_price` | Текущая цена криптовалюты в USD (CoinGecko API) | `symbol: string` (BTC, ETH, SOL, BNB, XRP, ADA, DOGE, TON) |
 
 ### Файлы
 
@@ -461,7 +490,7 @@ CLI (chat.py)  →  Agent (agent.py)  →  HTTP-клиент (api.py)  →  Open
 ```
 src/llm_cli/
   __init__.py       — пакет
-  __main__.py       — точка входа, argparse (--mcp, --tools, --compare)
+  __main__.py       — точка входа, argparse (--mcp, --agent-demo, --tools, --compare)
   agent.py          — LLM-агент (история диалога, 4 стратегии, ветки, модель памяти, tool calling)
   api.py            — HTTP-клиент OpenRouter (httpx, поддержка tool calling)
   benchmark.py      — бенчмарк моделей + модель-судья
@@ -469,7 +498,7 @@ src/llm_cli/
   config.py         — загрузка/сохранение TOML-конфига
   display.py        — Rich-отрисовка (таблицы, панели, спиннеры)
   mcp_client.py     — MCP-клиент: соединение, list_tools, call_tool (MCPSession)
-  mcp_server.py     — MCP-сервер: get_weather, calculate, list_models (FastMCP, stdio)
+  mcp_server.py     — MCP-сервер: get_weather, calculate, list_models, get_crypto_price (FastMCP, stdio)
   memory.py         — 3-слойная модель памяти (WorkingMemory, LongTermMemory, MemoryManager)
   models.py         — Pydantic-модели данных (включая ToolCall, ToolDefinition)
   strategy.py       — стратегии управления контекстом (Sliding Window, Sticky Facts)

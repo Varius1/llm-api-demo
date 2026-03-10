@@ -44,5 +44,39 @@ def list_models() -> str:
     return "\n".join(f"• {m}" for m in models)
 
 
+_COINGECKO_IDS: dict[str, str] = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "BNB": "binancecoin",
+    "XRP": "ripple",
+    "ADA": "cardano",
+    "DOGE": "dogecoin",
+    "TON": "the-open-network",
+}
+
+
+@mcp.tool()
+def get_crypto_price(symbol: str) -> str:
+    """Возвращает текущую цену криптовалюты в USD. Поддерживаемые символы: BTC, ETH, SOL, BNB, XRP, ADA, DOGE, TON."""
+    import httpx
+
+    coin_id = _COINGECKO_IDS.get(symbol.upper())
+    if not coin_id:
+        return f"Неизвестный символ '{symbol}'. Поддерживаются: {', '.join(_COINGECKO_IDS)}"
+
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    try:
+        resp = httpx.get(url, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        price = data[coin_id]["usd"]
+        return f"{symbol.upper()}: ${price:,} USD"
+    except httpx.HTTPStatusError as e:
+        return f"Ошибка: не удалось получить цену для {symbol.upper()} (HTTP {e.response.status_code})"
+    except Exception as e:
+        return f"Ошибка запроса к CoinGecko API: {e}"
+
+
 if __name__ == "__main__":
     mcp.run()
