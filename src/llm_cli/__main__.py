@@ -49,6 +49,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Демо: агент автоматически вызывает MCP-инструменты и получает результат",
     )
+    parser.add_argument(
+        "--scheduler",
+        action="store_true",
+        help="Запустить фоновый планировщик 24/7 (сбор цен + напоминания)",
+    )
+    parser.add_argument(
+        "--scheduler-demo",
+        action="store_true",
+        help="Автодемо планировщика: агент устанавливает напоминание, запускает мониторинг, получает сводку",
+    )
     return parser
 
 
@@ -64,6 +74,17 @@ def main() -> None:
     if args.agent_demo:
         from .mcp_client import run_agent_demo
         run_agent_demo()
+        return
+
+    if args.scheduler:
+        from .scheduler_daemon import run_scheduler_daemon
+        run_scheduler_daemon()
+        return
+
+    if args.scheduler_demo:
+        from .scheduler_daemon import run_scheduler_demo
+        cfg = ensure_config()
+        run_scheduler_demo(cfg.api_key)
         return
 
     cfg = ensure_config()
