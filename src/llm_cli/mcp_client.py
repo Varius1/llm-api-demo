@@ -251,3 +251,95 @@ def run_agent_demo() -> None:
 
     cfg = ensure_config()
     asyncio.run(_run_agent_demo(cfg.api_key))
+
+
+_PIPELINE_DEMO_PROMPT = (
+    "Выполни следующий пайплайн по шагам:\n"
+    "1. Используй инструмент search чтобы найти информацию о Python (запрос: 'python', max_results=5).\n"
+    "2. Используй инструмент summarize чтобы сжать полученный текст до 3 предложений.\n"
+    "3. Используй инструмент save_to_file чтобы сохранить резюме в файл pipeline_result.txt.\n"
+    "После выполнения всех шагов дай краткий итог: что нашёл, что получилось в резюме, куда сохранил."
+)
+
+_PIPELINE_DEMO_MODEL = "openai/gpt-4o-mini"
+
+
+async def _run_pipeline_demo(api_key: str) -> None:
+    from .agent import Agent
+    from .api import OpenRouterClient
+
+    console.print(Panel(
+        "[bold cyan]MCP Pipeline Demo[/bold cyan]\n"
+        "[dim]search → summarize → save_to_file[/dim]\n\n"
+        "[white]Агент автоматически выполнит цепочку инструментов:[/white]\n"
+        "  [yellow]1.[/yellow] [bold]search[/bold]       — получить данные\n"
+        "  [yellow]2.[/yellow] [bold]summarize[/bold]    — обработать / сжать\n"
+        "  [yellow]3.[/yellow] [bold]save_to_file[/bold] — сохранить результат",
+        border_style="cyan",
+        expand=False,
+    ))
+    console.print()
+
+    async with MCPSession() as mcp:
+        tools = mcp.get_tools_schema()
+
+        pipeline_tools = ["search", "summarize", "save_to_file"]
+        pipeline_tool_objs = [t for t in tools if t.function.name in pipeline_tools]
+        other_tools_count = len(tools) - len(pipeline_tool_objs)
+
+        table = Table(
+            title=f"Pipeline-инструменты ({len(pipeline_tool_objs)} из {len(tools)} доступных)",
+            box=box.ROUNDED,
+            border_style="cyan",
+            header_style="bold magenta",
+        )
+        table.add_column("#", style="bold yellow", width=3)
+        table.add_column("Инструмент", style="bold green", no_wrap=True)
+        table.add_column("Описание", style="white")
+
+        for i, t in enumerate(pipeline_tool_objs, 1):
+            desc_short = t.function.description.split("\n")[0]
+            table.add_row(str(i), t.function.name, desc_short)
+
+        console.print(table)
+        console.print(f"[dim]+ ещё {other_tools_count} инструментов зарегистрировано на сервере[/dim]\n")
+
+        console.print(Rule("[bold magenta]Промпт агенту[/bold magenta]", style="magenta"))
+        console.print(Panel(
+            _PIPELINE_DEMO_PROMPT,
+            border_style="dim",
+            expand=False,
+        ))
+        console.print()
+        console.print(Rule("[bold yellow]Tool Calling Pipeline[/bold yellow]", style="yellow"))
+        console.print()
+
+        with OpenRouterClient(api_key) as client:
+            agent = Agent(client=client, model=_PIPELINE_DEMO_MODEL, mcp_session=mcp)
+            reply = await agent.run_async(_PIPELINE_DEMO_PROMPT)
+
+        console.print()
+        console.print(Rule("[bold green]Финальный ответ LLM[/bold green]", style="green"))
+        console.print(Panel(reply, border_style="green", expand=False))
+
+        import os
+        from pathlib import Path
+        result_file = Path(os.getcwd()) / "pipeline_result.txt"
+        if result_file.exists():
+            content = result_file.read_text(encoding="utf-8")
+            console.print()
+            console.print(Rule("[bold blue]Содержимое сохранённого файла[/bold blue]", style="blue"))
+            console.print(Panel(
+                content,
+                title=f"[dim]{result_file}[/dim]",
+                border_style="blue",
+                expand=False,
+            ))
+
+
+def run_pipeline_demo() -> None:
+    """Автоматический пайплайн: search → summarize → save_to_file."""
+    from .config import ensure_config
+
+    cfg = ensure_config()
+    asyncio.run(_run_pipeline_demo(cfg.api_key))

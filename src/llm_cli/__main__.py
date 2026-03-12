@@ -59,6 +59,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Автодемо планировщика: агент устанавливает напоминание, запускает мониторинг, получает сводку",
     )
+    parser.add_argument(
+        "--pipeline-demo",
+        action="store_true",
+        help="Автоматический пайплайн: search → summarize → save_to_file",
+    )
     return parser
 
 
@@ -85,6 +90,11 @@ def main() -> None:
         from .scheduler_daemon import run_scheduler_demo
         cfg = ensure_config()
         run_scheduler_demo(cfg.api_key)
+        return
+
+    if args.pipeline_demo:
+        from .mcp_client import run_pipeline_demo
+        run_pipeline_demo()
         return
 
     cfg = ensure_config()
