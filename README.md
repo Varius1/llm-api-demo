@@ -107,6 +107,33 @@ LLM сама вызывает инструменты по цепочке, пер
   ✓ Финальный ответ получен
 ```
 
+### Orchestration MCP — два сервера, длинный флоу
+
+```bash
+llm-cli --orchestration-demo
+```
+
+Демонстрирует оркестрацию нескольких MCP-серверов: агент получает один промпт и автоматически выполняет 10 шагов через два специализированных сервера.
+
+**Два MCP-сервера:**
+- **Data & Analytics** (`mcp_server_data.py`) — `search`, `get_crypto_price`, `get_weather`, `calculate`, `summarize`
+- **Tools & Storage** (`mcp_server_tools.py`) — `save_to_file`, `list_models`, `add_reminder`, `get_pending_reminders`, `start_price_monitor`, `get_price_summary`
+
+Класс `MultiMCPSession` запускает оба сервера параллельно, строит единый список инструментов и автоматически маршрутизирует каждый вызов на нужный сервер по словарю `tool_name → server`.
+
+```
+  [MCP] LLM вызывает: search(query="MCP")
+    ↳ Маршрут: Data & Analytics
+  [MCP] LLM вызывает: get_crypto_price(symbol="BTC")
+    ↳ Маршрут: Data & Analytics
+  [MCP] LLM вызывает: list_models()
+    ↳ Маршрут: Tools & Storage
+  [MCP] LLM вызывает: save_to_file(filename="orchestration_report.md")
+    ↳ Маршрут: Tools & Storage
+```
+
+В конце агент сохраняет итоговый отчёт в `orchestration_report.md` и выводит его содержимое.
+
 ### Планировщик — напоминания и мониторинг цен
 
 #### Автодемо планировщика (одна команда, всё само)

@@ -343,3 +343,306 @@ def run_pipeline_demo() -> None:
 
     cfg = ensure_config()
     asyncio.run(_run_pipeline_demo(cfg.api_key))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MultiMCPSession — оркестратор нескольких MCP-серверов
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MultiMCPSession:
+    """Оркестратор двух MCP-серверов с автоматической маршрутизацией вызовов.
+
+    Сервер 1 — Data & Analytics (data-analytics):
+        search, get_crypto_price, get_weather, calculate, summarize
+
+    Сервер 2 — Tools & Storage (tools-storage):
+        save_to_file, list_models, add_reminder, get_pending_reminders,
+        start_price_monitor, get_price_summary
+
+    Использование:
+        async with MultiMCPSession() as session:
+            tools = session.get_tools_schema()
+            result = await session.call_tool("get_weather", {"city": "Москва"})
+    """
+
+    _DATA_SERVER_MODULE = "llm_cli.mcp_server_data"
+    _TOOLS_SERVER_MODULE = "llm_cli.mcp_server_tools"
+
+    def __init__(self, python_executable: str | None = None) -> None:
+        self._python = python_executable or sys.executable
+        self._data_session: ClientSession | None = None
+        self._tools_session: ClientSession | None = None
+        self._tools_schema: list[ToolDefinition] = []
+        self._tool_to_server: dict[str, str] = {}  # tool_name -> "data" | "tools"
+        self._exit_stack: Any = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    async def __aenter__(self) -> MultiMCPSession:
+        from contextlib import AsyncExitStack
+
+        self._loop = asyncio.get_running_loop()
+        self._exit_stack = AsyncExitStack()
+
+        # Запускаем Data & Analytics сервер
+        data_params = StdioServerParameters(
+            command=self._python,
+            args=["-m", self._DATA_SERVER_MODULE],
+        )
+        data_read, data_write = await self._exit_stack.enter_async_context(
+            stdio_client(data_params)
+        )
+        self._data_session = await self._exit_stack.enter_async_context(
+            ClientSession(data_read, data_write)
+        )
+        await self._data_session.initialize()
+
+        # Запускаем Tools & Storage сервер
+        tools_params = StdioServerParameters(
+            command=self._python,
+            args=["-m", self._TOOLS_SERVER_MODULE],
+        )
+        tools_read, tools_write = await self._exit_stack.enter_async_context(
+            stdio_client(tools_params)
+        )
+        self._tools_session = await self._exit_stack.enter_async_context(
+            ClientSession(tools_read, tools_write)
+        )
+        await self._tools_session.initialize()
+
+        await self._refresh_tools()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        if self._exit_stack is not None:
+            await self._exit_stack.aclose()
+
+    async def _refresh_tools(self) -> None:
+        assert self._data_session is not None
+        assert self._tools_session is not None
+
+        self._tools_schema = []
+        self._tool_to_server = {}
+
+        # Инструменты Data-сервера
+        data_result = await self._data_session.list_tools()
+        for tool in data_result.tools:
+            self._tool_to_server[tool.name] = "data"
+            self._tools_schema.append(
+                ToolDefinition(
+                    function=ToolDefinitionFunction(
+                        name=tool.name,
+                        description=f"[Data] {tool.description or ''}",
+                        parameters=tool.inputSchema or {"type": "object", "properties": {}},
+                    )
+                )
+            )
+
+        # Инструменты Tools-сервера
+        tools_result = await self._tools_session.list_tools()
+        for tool in tools_result.tools:
+            self._tool_to_server[tool.name] = "tools"
+            self._tools_schema.append(
+                ToolDefinition(
+                    function=ToolDefinitionFunction(
+                        name=tool.name,
+                        description=f"[Tools] {tool.description or ''}",
+                        parameters=tool.inputSchema or {"type": "object", "properties": {}},
+                    )
+                )
+            )
+
+    def get_tools_schema(self) -> list[ToolDefinition]:
+        """Вернуть объединённый список инструментов обоих серверов."""
+        return list(self._tools_schema)
+
+    def get_tool_server(self, name: str) -> str | None:
+        """Вернуть имя сервера для инструмента: 'data' или 'tools'."""
+        return self._tool_to_server.get(name)
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        """Вызвать инструмент, автоматически маршрутизируя на нужный сервер."""
+        server_key = self._tool_to_server.get(name)
+        if server_key == "data":
+            session = self._data_session
+        elif server_key == "tools":
+            session = self._tools_session
+        else:
+            return f"Ошибка: инструмент '{name}' не зарегистрирован ни на одном сервере"
+
+        assert session is not None
+        result = await session.call_tool(name, arguments)
+        content = result.content
+        if not content:
+            return ""
+        first = content[0]
+        if hasattr(first, "text"):
+            return first.text
+        return str(first)
+
+    def call_tool_sync(self, name: str, arguments: dict[str, Any]) -> str:
+        """Синхронная обёртка для вызова из синхронного tool loop (вне event loop)."""
+        import concurrent.futures
+
+        if self._loop is not None and self._loop.is_running():
+            # Планируем корутину в существующем loop из другого треда
+            fut = asyncio.run_coroutine_threadsafe(self.call_tool(name, arguments), self._loop)
+            return fut.result(timeout=60)
+        return asyncio.run(self.call_tool(name, arguments))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Orchestration Demo — длинный флоу через оба сервера
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ORCHESTRATION_DEMO_PROMPT = """\
+Ты — умный агент-аналитик. Выполни следующий исследовательский пайплайн строго по шагам, \
+используя доступные инструменты с двух серверов:
+
+ШАГИ (выполнять последовательно):
+
+1. Используй инструмент search: найди информацию про MCP (Model Context Protocol), max_results=4.
+2. Используй инструмент get_crypto_price: узнай текущую цену BTC в USD.
+3. Используй инструмент get_crypto_price: узнай текущую цену ETH в USD.
+4. Используй инструмент get_weather: узнай погоду в Москве.
+5. Используй инструмент calculate: посчитай выражение "365 * 24 * 60" (минуты в году).
+6. Используй инструмент summarize: сожми результаты шага 1 (search) до 2 предложений.
+7. Используй инструмент list_models: получи список доступных LLM-моделей.
+8. Используй инструмент add_reminder: установи напоминание \
+"Проверить курс BTC и ETH" через 120 секунд.
+9. Используй инструмент save_to_file: сохрани итоговый отчёт в файл \
+orchestration_report.md. Отчёт должен содержать: краткое резюме MCP из шага 6, \
+текущие цены BTC и ETH, погоду в Москве, результат вычисления и список моделей.
+10. Используй инструмент get_pending_reminders: проверь список всех напоминаний.
+
+После выполнения всех шагов дай финальный итог: что сделал, что нашёл, что сохранил.
+"""
+
+_ORCHESTRATION_DEMO_MODEL = "openai/gpt-4o-mini"
+
+
+async def _run_orchestration_demo(api_key: str) -> None:
+    from .agent import Agent
+    from .api import OpenRouterClient
+
+    # ── Шапка ───────────────────────────────────────────────────────────────
+    console.print()
+    console.print(Panel(
+        "[bold cyan]MCP Orchestration Demo[/bold cyan]\n"
+        "[dim]Два MCP-сервера · Автоматическая маршрутизация · Длинный флоу[/dim]\n\n"
+        "[white]Регистрируем два специализированных MCP-сервера:[/white]\n"
+        "  [bold yellow]①[/bold yellow] [bold green]Data & Analytics[/bold green]  "
+        "— search, get_crypto_price, get_weather, calculate, summarize\n"
+        "  [bold yellow]②[/bold yellow] [bold blue]Tools & Storage[/bold blue]    "
+        "— save_to_file, list_models, add_reminder, get_pending_reminders, …",
+        border_style="cyan",
+        expand=False,
+    ))
+    console.print()
+
+    async with MultiMCPSession() as mcp:
+        tools = mcp.get_tools_schema()
+        data_tools = [t for t in tools if t.function.description.startswith("[Data]")]
+        tools_tools = [t for t in tools if t.function.description.startswith("[Tools]")]
+
+        # ── Таблица инструментов по серверам ────────────────────────────────
+        servers_table = Table(
+            title=f"Зарегистрированные инструменты ({len(tools)} всего)",
+            box=box.ROUNDED,
+            border_style="cyan",
+            header_style="bold magenta",
+            show_lines=True,
+        )
+        servers_table.add_column("Сервер", style="bold", no_wrap=True, width=22)
+        servers_table.add_column("Инструмент", style="bold yellow", no_wrap=True)
+        servers_table.add_column("Описание", style="white")
+
+        for t in data_tools:
+            desc = t.function.description.removeprefix("[Data] ").split("\n")[0]
+            servers_table.add_row("[green]Data & Analytics[/green]", t.function.name, desc)
+        for t in tools_tools:
+            desc = t.function.description.removeprefix("[Tools] ").split("\n")[0]
+            servers_table.add_row("[blue]Tools & Storage[/blue]", t.function.name, desc)
+
+        console.print(servers_table)
+        console.print(f"[dim]Модель агента: {_ORCHESTRATION_DEMO_MODEL}[/dim]\n")
+
+        # ── Промпт ──────────────────────────────────────────────────────────
+        console.print(Rule("[bold magenta]Промпт агенту (10 шагов через 2 сервера)[/bold magenta]", style="magenta"))
+        console.print(Panel(
+            _ORCHESTRATION_DEMO_PROMPT,
+            border_style="dim",
+            expand=False,
+        ))
+        console.print()
+        console.print(Rule("[bold yellow]Orchestration Tool Calling Loop[/bold yellow]", style="yellow"))
+        console.print()
+
+        # Патчим call_tool_sync чтобы выводить маршрут
+        original_call_tool = mcp.call_tool
+
+        async def instrumented_call_tool(name: str, arguments: dict[str, Any]) -> str:
+            server_key = mcp.get_tool_server(name)
+            if server_key == "data":
+                server_label = "[green]Data & Analytics[/green]"
+            elif server_key == "tools":
+                server_label = "[blue]Tools & Storage[/blue]"
+            else:
+                server_label = "[red]Unknown[/red]"
+            console.print(f"  [dim]  ↳ Маршрут: {server_label}[/dim]")
+            return await original_call_tool(name, arguments)
+
+        mcp.call_tool = instrumented_call_tool  # type: ignore[method-assign]
+
+        with OpenRouterClient(api_key) as client:
+            agent = Agent(client=client, model=_ORCHESTRATION_DEMO_MODEL, mcp_session=mcp)
+            reply = await agent.run_async(_ORCHESTRATION_DEMO_PROMPT)
+
+        # ── Финальный ответ ──────────────────────────────────────────────────
+        console.print()
+        console.print(Rule("[bold green]Финальный ответ агента[/bold green]", style="green"))
+        console.print(Panel(reply, border_style="green", expand=False))
+
+        # ── Показываем сохранённый файл ───────────────────────────────────
+        import os
+        from pathlib import Path
+        report_file = Path(os.getcwd()) / "orchestration_report.md"
+        if report_file.exists():
+            content = report_file.read_text(encoding="utf-8")
+            console.print()
+            console.print(Rule("[bold blue]Сохранённый файл отчёта[/bold blue]", style="blue"))
+            console.print(Panel(
+                content,
+                title=f"[dim]{report_file}[/dim]",
+                border_style="blue",
+                expand=False,
+            ))
+
+        # ── Итоговая статистика ──────────────────────────────────────────────
+        console.print()
+        stats_table = Table(
+            title="Итог оркестрации",
+            box=box.SIMPLE_HEAD,
+            border_style="dim",
+            header_style="bold",
+        )
+        stats_table.add_column("Параметр", style="dim")
+        stats_table.add_column("Значение", style="bold cyan")
+        stats_table.add_row("Серверов задействовано", "2")
+        stats_table.add_row("Data & Analytics инструментов", str(len(data_tools)))
+        stats_table.add_row("Tools & Storage инструментов", str(len(tools_tools)))
+        stats_table.add_row("Шагов в пайплайне", "10")
+        stats_table.add_row("Модель", _ORCHESTRATION_DEMO_MODEL)
+        console.print(stats_table)
+
+
+def run_orchestration_demo() -> None:
+    """Длинный флоу оркестрации через два MCP-сервера с автоматической маршрутизацией."""
+    from .config import ensure_config
+
+    cfg = ensure_config()
+    asyncio.run(_run_orchestration_demo(cfg.api_key))

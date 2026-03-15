@@ -64,6 +64,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Автоматический пайплайн: search → summarize → save_to_file",
     )
+    parser.add_argument(
+        "--orchestration-demo",
+        action="store_true",
+        help="Оркестрация MCP: длинный флоу через два сервера (Data & Analytics + Tools & Storage)",
+    )
     return parser
 
 
@@ -95,6 +100,11 @@ def main() -> None:
     if args.pipeline_demo:
         from .mcp_client import run_pipeline_demo
         run_pipeline_demo()
+        return
+
+    if args.orchestration_demo:
+        from .mcp_client import run_orchestration_demo
+        run_orchestration_demo()
         return
 
     cfg = ensure_config()
