@@ -69,6 +69,27 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Оркестрация MCP: длинный флоу через два сервера (Data & Analytics + Tools & Storage)",
     )
+    parser.add_argument(
+        "--rag-index",
+        action="store_true",
+        help="Запустить RAG-пайплайн индексации документов (chunking + embeddings + FAISS)",
+    )
+    parser.add_argument(
+        "--rag-strategy",
+        choices=["fixed", "structural", "both"],
+        default="both",
+        help="Стратегия чанкинга для --rag-index (default: both)",
+    )
+    parser.add_argument(
+        "--rag-no-compare",
+        action="store_true",
+        help="Пропустить сравнение стратегий при --rag-index",
+    )
+    parser.add_argument(
+        "--rag-demo",
+        action="store_true",
+        help="Наглядная демонстрация результатов RAG-задания (использует готовый индекс)",
+    )
     return parser
 
 
@@ -105,6 +126,16 @@ def main() -> None:
     if args.orchestration_demo:
         from .mcp_client import run_orchestration_demo
         run_orchestration_demo()
+        return
+
+    if args.rag_index:
+        from .rag.pipeline import run_pipeline
+        run_pipeline(strategy=args.rag_strategy, compare=not args.rag_no_compare)
+        return
+
+    if args.rag_demo:
+        from .rag.demo import run_demo
+        run_demo()
         return
 
     cfg = ensure_config()

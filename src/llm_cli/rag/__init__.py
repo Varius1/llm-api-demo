@@ -1,0 +1,1 @@
+"""RAG indexing pipeline module."""

@@ -594,12 +594,78 @@ CLI (chat.py)  →  Agent (agent.py)  →  HTTP-клиент (api.py)  →  Open
 - поддерживает 3-слойную модель памяти (краткосрочная / рабочая / долговременная)
 - не зависит от интерфейса — можно подключить к CLI, веб-серверу или боту
 
+## RAG Indexing Pipeline
+
+Локальный пайплайн индексации документов с эмбеддингами, метаданными и FAISS-индексом.
+
+### Документы
+
+20 файлов курса [HuggingFace NLP Course](https://huggingface.co/learn/nlp-course/en) (главы 1–5, ~251 000 символов) в `data/docs/`.
+
+### Две стратегии chunking
+
+| Стратегия | Описание | Чанков | Stdev длины |
+|---|---|---|---|
+| **Fixed** | Скользящее окно 512 символов, overlap 64 | 569 | 58.3 |
+| **Structural** | Разбивка по заголовкам `#`/`##`/`###` | 556 | 209.4 |
+
+Fixed даёт равномерный размер чанков, Structural сохраняет смысловые границы разделов.
+
+### Метаданные каждого чанка
+
+```json
+{
+  "chunk_id": "chapter1_3_mdx_struct_0001",
+  "source": "huggingface_nlp_course",
+  "file": "chapter1/3.mdx",
+  "chapter": "chapter1",
+  "title": "Transformers, what can they do?",
+  "strategy": "structural",
+  "section": "Transformers are everywhere!",
+  "heading_level": 2
+}
+```
+
+### Индекс
+
+- `data/index/fixed/` — FAISS `IndexFlatIP` (569 × 384-dim) + `metadata.json`
+- `data/index/structural/` — FAISS `IndexFlatIP` (556 × 384-dim) + `metadata.json`
+- Модель эмбеддингов: `all-MiniLM-L6-v2` (локально), cosine similarity
+
+### Команды
+
+```bash
+# Наглядная демонстрация результатов задания (шаги 1–6)
+python -m llm_cli --rag-demo
+
+# Полная пересборка индекса (обе стратегии + сравнение)
+python -m llm_cli --rag-index
+
+# Только одна стратегия, без сравнения
+python -m llm_cli --rag-index --rag-strategy fixed --rag-no-compare
+```
+
+### Модуль
+
+```
+src/llm_cli/rag/
+  loader.py    — загрузка и парсинг .mdx/.md файлов
+  chunker.py   — FixedChunker и StructuralChunker
+  embedder.py  — батчевые эмбеддинги через all-MiniLM-L6-v2
+  indexer.py   — FAISS-индекс + сохранение/загрузка
+  compare.py   — статистика и сравнение стратегий
+  pipeline.py  — точка входа с CLI-флагами
+  demo.py      — пошаговая демонстрация результатов
+```
+
+---
+
 ## Структура проекта
 
 ```
 src/llm_cli/
   __init__.py       — пакет
-  __main__.py       — точка входа, argparse (--mcp, --agent-demo, --tools, --compare)
+  __main__.py       — точка входа, argparse (--mcp, --agent-demo, --tools, --compare, --rag-index, --rag-demo)
   agent.py          — LLM-агент (история диалога, 4 стратегии, ветки, модель памяти, tool calling)
   api.py            — HTTP-клиент OpenRouter (httpx, поддержка tool calling)
   benchmark.py      — бенчмарк моделей + модель-судья
@@ -611,4 +677,5 @@ src/llm_cli/
   memory.py         — 3-слойная модель памяти (WorkingMemory, LongTermMemory, MemoryManager)
   models.py         — Pydantic-модели данных (включая ToolCall, ToolDefinition)
   strategy.py       — стратегии управления контекстом (Sliding Window, Sticky Facts)
+  rag/              — RAG пайплайн (chunking, embeddings, FAISS, compare, demo)
 ```
