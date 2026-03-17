@@ -90,6 +90,35 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Наглядная демонстрация результатов RAG-задания (использует готовый индекс)",
     )
+    parser.add_argument(
+        "--rag-chat",
+        action="store_true",
+        help="Интерактивный чат с двумя режимами: /rag on|off переключает RAG в реальном времени",
+    )
+    parser.add_argument(
+        "--rag-eval",
+        action="store_true",
+        help="10 контрольных вопросов: side-by-side сравнение ответов без RAG и с RAG",
+    )
+    parser.add_argument(
+        "--rag-compare",
+        type=str,
+        default=None,
+        metavar="QUESTION_ID",
+        help="Детальное сравнение без/с RAG для одного вопроса (ID 1–10 из eval или произвольный текст)",
+    )
+    parser.add_argument(
+        "--rag-eval-strategy",
+        choices=["fixed", "structural"],
+        default="structural",
+        help="Стратегия чанкинга для --rag-eval и --rag-chat (default: structural)",
+    )
+    parser.add_argument(
+        "--rag-top-k",
+        type=int,
+        default=5,
+        help="Число чанков для RAG-поиска (default: 5)",
+    )
     return parser
 
 
@@ -137,6 +166,30 @@ def main() -> None:
         from .rag.demo import run_demo
         run_demo()
         return
+
+    if args.rag_chat or args.rag_eval or args.rag_compare is not None:
+        from .rag.rag_demo import run_full_eval, run_interactive_chat, run_single_comparison
+        cfg = ensure_config()
+        model = cfg.default_model
+        strategy = args.rag_eval_strategy
+        top_k = args.rag_top_k
+
+        if args.rag_eval:
+            run_full_eval(cfg.api_key, model, strategy=strategy, top_k=top_k)
+            return
+
+        if args.rag_compare is not None:
+            # Если передан числовой ID — берём вопрос из EVAL_QUESTIONS, иначе — как текст
+            try:
+                q_id = int(args.rag_compare)
+                run_single_comparison(cfg.api_key, model, question_id=q_id, strategy=strategy, top_k=top_k)
+            except ValueError:
+                run_single_comparison(cfg.api_key, model, question=args.rag_compare, strategy=strategy, top_k=top_k)
+            return
+
+        if args.rag_chat:
+            run_interactive_chat(cfg.api_key, model, strategy=strategy, top_k=top_k)
+            return
 
     cfg = ensure_config()
 
