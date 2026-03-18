@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from .chunker import Chunk
 from .embedder import Embedder
 from .indexer import FaissIndex
+from .relevance import PostRetrievalMode, PostRetrievalStats, apply_post_retrieval
 
 if TYPE_CHECKING:
     from ..agent import Agent
@@ -36,6 +37,7 @@ class RagAnswer:
     text: str
     chunks: list[tuple[Chunk, float]] = field(default_factory=list)
     used_rag: bool = False
+    retrieval_stats: PostRetrievalStats | None = None
 
     @property
     def sources(self) -> list[str]:
@@ -65,12 +67,30 @@ class RagAgent:
         index_dir: Path | None = None,
         strategy: str = "structural",
         top_k: int = 5,
+        top_k_before: int | None = None,
+        top_k_after: int | None = None,
+        min_similarity: float = 0.0,
+        post_retrieval_mode: PostRetrievalMode = "off",
+        rewrite_enabled: bool = True,
         temperature: float | None = 0.3,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._index_dir = (index_dir or _INDEX_DIR) / strategy
-        self._top_k = top_k
+        resolved_top_k_before = top_k_before if top_k_before is not None else top_k
+        resolved_top_k_after = top_k_after if top_k_after is not None else resolved_top_k_before
+        if resolved_top_k_before <= 0:
+            raise ValueError("top_k_before must be > 0")
+        if resolved_top_k_after <= 0:
+            raise ValueError("top_k_after must be > 0")
+        if post_retrieval_mode not in {"off", "threshold", "rerank"}:
+            raise ValueError("post_retrieval_mode must be one of: off, threshold, rerank")
+
+        self._top_k_before = resolved_top_k_before
+        self._top_k_after = resolved_top_k_after
+        self._min_similarity = min_similarity
+        self._post_retrieval_mode: PostRetrievalMode = post_retrieval_mode
+        self._rewrite_enabled = rewrite_enabled
         self._temperature = temperature
         self._strategy = strategy
 
@@ -106,13 +126,42 @@ class RagAgent:
         except Exception:
             return question
 
-    def _retrieve(self, question: str, client: "OpenRouterClient | None" = None) -> list[tuple[Chunk, float]]:  # type: ignore[name-defined]
+    def _retrieve(
+        self,
+        question: str,
+        client: "OpenRouterClient | None" = None,  # type: ignore[name-defined]
+        *,
+        rewrite_enabled: bool | None = None,
+        post_retrieval_mode: PostRetrievalMode | None = None,
+        top_k_before: int | None = None,
+        top_k_after: int | None = None,
+        min_similarity: float | None = None,
+    ) -> tuple[list[tuple[Chunk, float]], PostRetrievalStats]:
         self._ensure_index()
         assert self._embedder is not None and self._index is not None
+        rewrite = self._rewrite_enabled if rewrite_enabled is None else rewrite_enabled
+        mode = self._post_retrieval_mode if post_retrieval_mode is None else post_retrieval_mode
+        retrieval_top_k = self._top_k_before if top_k_before is None else top_k_before
+        selected_top_k = self._top_k_after if top_k_after is None else top_k_after
+        threshold = self._min_similarity if min_similarity is None else min_similarity
+
         # Переводим на английский для лучшего семантического поиска по английскому индексу
-        search_query = self._translate_query(question, client) if client is not None else question
+        search_query = (
+            self._translate_query(question, client) if (rewrite and client is not None) else question
+        )
         q_emb = self._embedder.encode([search_query], show_progress=False)
-        return self._index.search(q_emb, top_k=self._top_k)
+        raw_chunks = self._index.search(q_emb, top_k=retrieval_top_k)
+        selected_chunks, stats = apply_post_retrieval(
+            raw_chunks,
+            query=search_query,
+            mode=mode,
+            top_k_before=retrieval_top_k,
+            top_k_after=selected_top_k,
+            min_similarity=threshold,
+        )
+        stats.query_rewritten = search_query.strip() != question.strip()
+        stats.rewritten_query = search_query if stats.query_rewritten else None
+        return selected_chunks, stats
 
     def _build_rag_prompt(self, question: str, chunks: list[tuple[Chunk, float]]) -> str:
         lines = [
@@ -140,7 +189,17 @@ class RagAgent:
         )
         return "\n".join(lines)
 
-    def ask(self, question: str, use_rag: bool = True) -> RagAnswer:
+    def ask(
+        self,
+        question: str,
+        use_rag: bool = True,
+        *,
+        rewrite_enabled: bool | None = None,
+        post_retrieval_mode: PostRetrievalMode | None = None,
+        top_k_before: int | None = None,
+        top_k_after: int | None = None,
+        min_similarity: float | None = None,
+    ) -> RagAnswer:
         """Задать вопрос агенту.
 
         Args:
@@ -168,10 +227,18 @@ class RagAgent:
             agent._raw_history = [msg for msg in agent._raw_history if msg.role == "system"]
 
             if use_rag:
-                chunks = self._retrieve(question, client=client)
+                chunks, retrieval_stats = self._retrieve(
+                    question,
+                    client=client,
+                    rewrite_enabled=rewrite_enabled,
+                    post_retrieval_mode=post_retrieval_mode,
+                    top_k_before=top_k_before,
+                    top_k_after=top_k_after,
+                    min_similarity=min_similarity,
+                )
                 prompt = self._build_rag_prompt(question, chunks)
                 text = agent.run(prompt)
-                return RagAnswer(text=text, chunks=chunks, used_rag=True)
+                return RagAnswer(text=text, chunks=chunks, used_rag=True, retrieval_stats=retrieval_stats)
             else:
                 text = agent.run(question)
                 return RagAnswer(text=text, chunks=[], used_rag=False)

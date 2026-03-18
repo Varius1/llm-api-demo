@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import cast
 
 from rich.columns import Columns
 from rich.console import Console
@@ -17,8 +18,9 @@ from rich.text import Text
 from rich import box
 from rich.table import Table
 
-from .eval import EVAL_QUESTIONS, run_eval
+from .eval import EVAL_QUESTIONS, EvalMode, run_eval, run_mode_comparison_eval
 from .rag_agent import RagAgent
+from .relevance import PostRetrievalMode
 
 console = Console()
 
@@ -47,6 +49,11 @@ def run_single_comparison(
     question_id: int = 1,
     strategy: str = "structural",
     top_k: int = 5,
+    top_k_before: int | None = None,
+    top_k_after: int | None = None,
+    min_similarity: float = 0.0,
+    post_mode: PostRetrievalMode = "off",
+    rewrite_enabled: bool = True,
 ) -> None:
     """Сравнить ответы без RAG и с RAG для одного вопроса.
 
@@ -72,6 +79,11 @@ def run_single_comparison(
         index_dir=_INDEX_DIR,
         strategy=strategy,
         top_k=top_k,
+        top_k_before=top_k_before,
+        top_k_after=top_k_after,
+        min_similarity=min_similarity,
+        post_retrieval_mode=post_mode,
+        rewrite_enabled=rewrite_enabled,
     )
 
     # --- Без RAG ---
@@ -151,6 +163,17 @@ def run_single_comparison(
         else:
             console.print("[red]✗ Без RAG ответ содержит больше ключевых слов[/red]")
 
+    if ans_rag.retrieval_stats is not None:
+        st = ans_rag.retrieval_stats
+        console.print(
+            "[dim]"
+            f"RAG mode={st.mode}, rewrite={'yes' if st.query_rewritten else 'no'}, "
+            f"top_k(before/after)={st.top_k_before}/{st.top_k_after}, "
+            f"min_similarity={st.min_similarity:.3f}, "
+            f"selected={st.selected_count}, fallback={'yes' if st.fallback_used else 'no'}"
+            "[/dim]"
+        )
+
     console.print()
 
 
@@ -159,6 +182,11 @@ def run_full_eval(
     model: str,
     strategy: str = "structural",
     top_k: int = 5,
+    top_k_before: int | None = None,
+    top_k_after: int | None = None,
+    min_similarity: float = 0.0,
+    post_mode: PostRetrievalMode = "off",
+    rewrite_enabled: bool = True,
 ) -> None:
     """Запустить полный eval: 10 контрольных вопросов с итоговой таблицей.
 
@@ -179,6 +207,11 @@ def run_full_eval(
         index_dir=_INDEX_DIR,
         strategy=strategy,
         top_k=top_k,
+        top_k_before=top_k_before,
+        top_k_after=top_k_after,
+        min_similarity=min_similarity,
+        post_retrieval_mode=post_mode,
+        rewrite_enabled=rewrite_enabled,
     )
 
     # Прогреть индекс до начала eval
@@ -194,6 +227,11 @@ def run_interactive_chat(
     model: str,
     strategy: str = "structural",
     top_k: int = 5,
+    top_k_before: int | None = None,
+    top_k_after: int | None = None,
+    min_similarity: float = 0.0,
+    post_mode: PostRetrievalMode = "off",
+    rewrite_enabled: bool = True,
 ) -> None:
     """Интерактивный режим чата с переключением RAG on/off командой /rag.
 
@@ -210,6 +248,11 @@ def run_interactive_chat(
         index_dir=_INDEX_DIR,
         strategy=strategy,
         top_k=top_k,
+        top_k_before=top_k_before,
+        top_k_after=top_k_after,
+        min_similarity=min_similarity,
+        post_retrieval_mode=post_mode,
+        rewrite_enabled=rewrite_enabled,
     )
 
     use_rag = True
@@ -268,3 +311,76 @@ def run_interactive_chat(
             )
         )
         console.print()
+
+
+def run_demo_suite(
+    api_key: str,
+    model: str,
+    strategy: str = "structural",
+    top_k: int = 5,
+    top_k_before: int | None = None,
+    top_k_after: int | None = None,
+    min_similarity: float = 0.45,
+    improved_post_mode: PostRetrievalMode = "threshold",
+    question_limit: int = 10,
+) -> None:
+    """Единая демо-команда: baseline/rewrite-only/improved + итоговая сводка."""
+    _header()
+
+    before_k = top_k_before if top_k_before is not None else top_k
+    after_k = top_k_after if top_k_after is not None else before_k
+
+    console.print(
+        f"[dim]Модель: {model} · Стратегия: {strategy} · "
+        f"top_k(before/after)={before_k}/{after_k} · "
+        f"improved_mode={improved_post_mode} · min_similarity={min_similarity:.3f}[/dim]\n"
+    )
+
+    agent = RagAgent(
+        api_key=api_key,
+        model=model,
+        index_dir=_INDEX_DIR,
+        strategy=strategy,
+        top_k=top_k,
+        top_k_before=before_k,
+        top_k_after=after_k,
+        min_similarity=min_similarity,
+        post_retrieval_mode="off",
+        rewrite_enabled=True,
+    )
+
+    console.print("[dim]Загружаем FAISS-индекс...[/dim]")
+    agent._ensure_index()
+    console.print(f"[dim]Индекс загружен: {agent._index.index.ntotal} векторов[/dim]\n")  # type: ignore[union-attr]
+
+    modes = [
+        EvalMode(
+            name="baseline",
+            label="[yellow]baseline (no-rewrite, no-filter)[/yellow]",
+            rewrite_enabled=False,
+            post_mode="off",
+            top_k_before=before_k,
+            top_k_after=after_k,
+            min_similarity=0.0,
+        ),
+        EvalMode(
+            name="rewrite_only",
+            label="[cyan]rewrite-only[/cyan]",
+            rewrite_enabled=True,
+            post_mode="off",
+            top_k_before=before_k,
+            top_k_after=after_k,
+            min_similarity=0.0,
+        ),
+        EvalMode(
+            name="improved",
+            label="[green]improved (rewrite + filter/rerank)[/green]",
+            rewrite_enabled=True,
+            post_mode=cast(PostRetrievalMode, improved_post_mode),
+            top_k_before=before_k,
+            top_k_after=after_k,
+            min_similarity=min_similarity,
+        ),
+    ]
+
+    run_mode_comparison_eval(agent, modes=modes, question_limit=question_limit)

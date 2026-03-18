@@ -1,22 +1,19 @@
-"""10 контрольных вопросов по HuggingFace NLP Course + функция оценки RAG vs no-RAG."""
+"""10 контрольных вопросов и режимы оценки RAG."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich import box
 
 if TYPE_CHECKING:
     from .rag_agent import RagAgent
+    from .relevance import PostRetrievalMode
 
 console = Console()
-
-# ---------------------------------------------------------------------------
-# 10 контрольных вопросов
-# ---------------------------------------------------------------------------
 
 EVAL_QUESTIONS: list[dict] = [
     {
@@ -92,10 +89,6 @@ EVAL_QUESTIONS: list[dict] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Результат одного вопроса
-# ---------------------------------------------------------------------------
-
 @dataclass
 class EvalResult:
     question_id: int
@@ -132,19 +125,8 @@ def _short(text: str, max_len: int = 120) -> str:
     return text[:max_len] + "…" if len(text) > max_len else text
 
 
-# ---------------------------------------------------------------------------
-# Основная функция eval
-# ---------------------------------------------------------------------------
-
 def run_eval(rag_agent: RagAgent) -> list[EvalResult]:
-    """Прогнать 10 контрольных вопросов, вывести Rich-таблицу сравнения.
-
-    Args:
-        rag_agent: Инициализированный RagAgent.
-
-    Returns:
-        Список EvalResult для каждого вопроса.
-    """
+    """Прогнать 10 вопросов и сравнить no-RAG vs текущий RAG-конфиг агента."""
     results: list[EvalResult] = []
 
     console.print()
@@ -188,6 +170,175 @@ def run_eval(rag_agent: RagAgent) -> list[EvalResult]:
     # Итоговая таблица
     _print_summary_table(results)
     return results
+
+
+@dataclass
+class EvalMode:
+    name: str
+    label: str
+    rewrite_enabled: bool
+    post_mode: PostRetrievalMode
+    top_k_before: int
+    top_k_after: int
+    min_similarity: float
+
+
+@dataclass
+class ModeEvalTotals:
+    mode: EvalMode
+    total_hits: int = 0
+    total_keywords: int = 0
+    total_selected_chunks: int = 0
+    total_avg_similarity: float = 0.0
+    wins_vs_baseline: int = 0
+
+    @property
+    def hit_rate(self) -> float:
+        if self.total_keywords == 0:
+            return 0.0
+        return self.total_hits / self.total_keywords
+
+    @property
+    def avg_selected_chunks(self) -> float:
+        if self.total_keywords == 0:
+            return 0.0
+        # total_keywords / keywords_per_question одинаково для режимов, используем число прогонов.
+        return self.total_selected_chunks / max(1, self._runs)
+
+    @property
+    def avg_similarity(self) -> float:
+        if self._runs == 0:
+            return 0.0
+        return self.total_avg_similarity / self._runs
+
+    _runs: int = 0
+
+
+def run_mode_comparison_eval(
+    rag_agent: RagAgent,
+    *,
+    modes: list[EvalMode],
+    question_limit: int = 10,
+) -> dict[str, ModeEvalTotals]:
+    """Сравнить несколько RAG-режимов между собой и с no-RAG baseline."""
+    if question_limit <= 0:
+        raise ValueError("question_limit must be > 0")
+
+    questions = EVAL_QUESTIONS[:min(question_limit, len(EVAL_QUESTIONS))]
+    totals = {mode.name: ModeEvalTotals(mode=mode) for mode in modes}
+    baseline_scores: dict[int, int] = {}
+
+    console.print()
+    console.print(Panel(
+        "[bold cyan]RAG Mode Comparison[/bold cyan]\n"
+        "[dim]Сравнение baseline / rewrite-only / improved[/dim]",
+        border_style="cyan",
+    ))
+    console.print()
+
+    for idx, q in enumerate(questions, 1):
+        console.rule(f"[bold]Вопрос {idx}/{len(questions)}[/bold]")
+        console.print(f"[bold yellow]{q['question']}[/bold yellow]")
+        console.print(f"[dim]Подсказка: {q['hint']}[/dim]\n")
+
+        console.print("[bold red]⟳[/bold red] baseline no-RAG...")
+        no_rag = rag_agent.ask(q["question"], use_rag=False)
+        baseline_hits = _count_hits(no_rag.text, q["expected_keywords"])
+        baseline_scores[q["id"]] = baseline_hits
+
+        q_table = Table(box=box.ROUNDED, show_header=True, header_style="bold white", expand=True)
+        q_table.add_column("Режим", width=22)
+        q_table.add_column("Hit", justify="center", width=10)
+        q_table.add_column("Chunks", justify="center", width=8)
+        q_table.add_column("Avg sim", justify="center", width=10)
+        q_table.add_column("Пример ответа", ratio=2)
+        q_table.add_row("[red]no-RAG[/red]", f"{baseline_hits}/{len(q['expected_keywords'])}", "—", "—", _short(no_rag.text))
+
+        for mode in modes:
+            console.print(f"[bold green]⟳[/bold green] {mode.label}...")
+            answer = rag_agent.ask(
+                q["question"],
+                use_rag=True,
+                rewrite_enabled=mode.rewrite_enabled,
+                post_retrieval_mode=mode.post_mode,
+                top_k_before=mode.top_k_before,
+                top_k_after=mode.top_k_after,
+                min_similarity=mode.min_similarity,
+            )
+            hits = _count_hits(answer.text, q["expected_keywords"])
+            stats = answer.retrieval_stats
+            selected_chunks = len(answer.chunks)
+            avg_similarity = stats.avg_similarity if stats is not None else 0.0
+
+            summary = totals[mode.name]
+            summary.total_hits += hits
+            summary.total_keywords += len(q["expected_keywords"])
+            summary.total_selected_chunks += selected_chunks
+            summary.total_avg_similarity += avg_similarity
+            summary._runs += 1
+            if hits > baseline_hits:
+                summary.wins_vs_baseline += 1
+
+            q_table.add_row(
+                mode.label,
+                f"{hits}/{len(q['expected_keywords'])}",
+                str(selected_chunks),
+                f"{avg_similarity:.3f}",
+                _short(answer.text),
+            )
+
+        console.print(q_table)
+        console.print()
+
+    _print_mode_summary(questions, totals, baseline_scores)
+    return totals
+
+
+def _count_hits(answer: str, keywords: list[str]) -> int:
+    lower = answer.lower()
+    return sum(1 for kw in keywords if kw.lower() in lower)
+
+
+def _print_mode_summary(
+    questions: list[dict],
+    totals: dict[str, ModeEvalTotals],
+    baseline_scores: dict[int, int],
+) -> None:
+    console.rule("[bold cyan]Итоги сравнения режимов[/bold cyan]")
+    console.print()
+
+    baseline_total = 0
+    baseline_keywords = 0
+    for q in questions:
+        baseline_total += baseline_scores[q["id"]]
+        baseline_keywords += len(q["expected_keywords"])
+
+    tbl = Table(title="Сводка режимов", box=box.HEAVY_HEAD, expand=True)
+    tbl.add_column("Режим", ratio=2)
+    tbl.add_column("Hit rate", justify="center", width=12)
+    tbl.add_column("Avg chunks", justify="center", width=12)
+    tbl.add_column("Avg similarity", justify="center", width=16)
+    tbl.add_column("Побед над no-RAG", justify="center", width=18)
+
+    tbl.add_row(
+        "[red]no-RAG (baseline)[/red]",
+        f"{(baseline_total / baseline_keywords * 100.0):.1f}%",
+        "—",
+        "—",
+        "—",
+    )
+
+    for summary in totals.values():
+        tbl.add_row(
+            summary.mode.label,
+            f"{summary.hit_rate * 100.0:.1f}%",
+            f"{summary.avg_selected_chunks:.2f}",
+            f"{summary.avg_similarity:.3f}",
+            f"{summary.wins_vs_baseline}/{len(questions)}",
+        )
+
+    console.print(tbl)
+    console.print()
 
 
 def _print_question_result(r: EvalResult) -> None:

@@ -96,6 +96,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Интерактивный чат с двумя режимами: /rag on|off переключает RAG в реальном времени",
     )
     parser.add_argument(
+        "--rag-demo-suite",
+        action="store_true",
+        help="Полный demo-suite: baseline/rewrite-only/improved + итоговая таблица",
+    )
+    parser.add_argument(
         "--rag-eval",
         action="store_true",
         help="10 контрольных вопросов: side-by-side сравнение ответов без RAG и с RAG",
@@ -118,6 +123,42 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="Число чанков для RAG-поиска (default: 5)",
+    )
+    parser.add_argument(
+        "--rag-top-k-before",
+        type=int,
+        default=None,
+        help="Сколько кандидатов извлекать из FAISS до post-retrieval (default: --rag-top-k)",
+    )
+    parser.add_argument(
+        "--rag-top-k-after",
+        type=int,
+        default=None,
+        help="Сколько чанков оставлять после фильтра/реранка (default: --rag-top-k-before)",
+    )
+    parser.add_argument(
+        "--rag-min-similarity",
+        type=float,
+        default=0.0,
+        help="Порог similarity для отсечения нерелевантных кандидатов (default: 0.0)",
+    )
+    parser.add_argument(
+        "--rag-post-mode",
+        choices=["off", "threshold", "rerank"],
+        default="off",
+        help="Post-retrieval режим: off, threshold или rerank",
+    )
+    parser.add_argument(
+        "--rag-rewrite",
+        choices=["on", "off"],
+        default="on",
+        help="Включить/выключить query rewrite перед retrieval (default: on)",
+    )
+    parser.add_argument(
+        "--rag-question-limit",
+        type=int,
+        default=10,
+        help="Сколько контрольных вопросов прогонять в --rag-demo-suite (default: 10)",
     )
     return parser
 
@@ -167,28 +208,89 @@ def main() -> None:
         run_demo()
         return
 
-    if args.rag_chat or args.rag_eval or args.rag_compare is not None:
-        from .rag.rag_demo import run_full_eval, run_interactive_chat, run_single_comparison
+    if args.rag_chat or args.rag_eval or args.rag_demo_suite or args.rag_compare is not None:
+        from .rag.rag_demo import run_demo_suite, run_full_eval, run_interactive_chat, run_single_comparison
         cfg = ensure_config()
         model = cfg.default_model
         strategy = args.rag_eval_strategy
         top_k = args.rag_top_k
+        top_k_before = args.rag_top_k_before
+        top_k_after = args.rag_top_k_after
+        min_similarity = args.rag_min_similarity
+        post_mode = args.rag_post_mode
+        rewrite_enabled = args.rag_rewrite == "on"
 
         if args.rag_eval:
-            run_full_eval(cfg.api_key, model, strategy=strategy, top_k=top_k)
+            run_full_eval(
+                cfg.api_key,
+                model,
+                strategy=strategy,
+                top_k=top_k,
+                top_k_before=top_k_before,
+                top_k_after=top_k_after,
+                min_similarity=min_similarity,
+                post_mode=post_mode,
+                rewrite_enabled=rewrite_enabled,
+            )
+            return
+
+        if args.rag_demo_suite:
+            run_demo_suite(
+                cfg.api_key,
+                model,
+                strategy=strategy,
+                top_k=top_k,
+                top_k_before=top_k_before,
+                top_k_after=top_k_after,
+                min_similarity=min_similarity,
+                improved_post_mode=post_mode if post_mode != "off" else "threshold",
+                question_limit=args.rag_question_limit,
+            )
             return
 
         if args.rag_compare is not None:
             # Если передан числовой ID — берём вопрос из EVAL_QUESTIONS, иначе — как текст
             try:
                 q_id = int(args.rag_compare)
-                run_single_comparison(cfg.api_key, model, question_id=q_id, strategy=strategy, top_k=top_k)
+                run_single_comparison(
+                    cfg.api_key,
+                    model,
+                    question_id=q_id,
+                    strategy=strategy,
+                    top_k=top_k,
+                    top_k_before=top_k_before,
+                    top_k_after=top_k_after,
+                    min_similarity=min_similarity,
+                    post_mode=post_mode,
+                    rewrite_enabled=rewrite_enabled,
+                )
             except ValueError:
-                run_single_comparison(cfg.api_key, model, question=args.rag_compare, strategy=strategy, top_k=top_k)
+                run_single_comparison(
+                    cfg.api_key,
+                    model,
+                    question=args.rag_compare,
+                    strategy=strategy,
+                    top_k=top_k,
+                    top_k_before=top_k_before,
+                    top_k_after=top_k_after,
+                    min_similarity=min_similarity,
+                    post_mode=post_mode,
+                    rewrite_enabled=rewrite_enabled,
+                )
             return
 
         if args.rag_chat:
-            run_interactive_chat(cfg.api_key, model, strategy=strategy, top_k=top_k)
+            run_interactive_chat(
+                cfg.api_key,
+                model,
+                strategy=strategy,
+                top_k=top_k,
+                top_k_before=top_k_before,
+                top_k_after=top_k_after,
+                min_similarity=min_similarity,
+                post_mode=post_mode,
+                rewrite_enabled=rewrite_enabled,
+            )
             return
 
     cfg = ensure_config()
