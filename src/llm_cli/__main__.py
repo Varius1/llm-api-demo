@@ -101,6 +101,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Полный demo-suite: baseline/rewrite-only/improved + итоговая таблица",
     )
     parser.add_argument(
+        "--rag-grounded-demo",
+        action="store_true",
+        help="Видео-демо: 10 вопросов с проверкой sources/citations + проверка режима 'не знаю'",
+    )
+    parser.add_argument(
         "--rag-eval",
         action="store_true",
         help="10 контрольных вопросов: side-by-side сравнение ответов без RAG и с RAG",
@@ -208,8 +213,14 @@ def main() -> None:
         run_demo()
         return
 
-    if args.rag_chat or args.rag_eval or args.rag_demo_suite or args.rag_compare is not None:
-        from .rag.rag_demo import run_demo_suite, run_full_eval, run_interactive_chat, run_single_comparison
+    if args.rag_chat or args.rag_eval or args.rag_demo_suite or args.rag_grounded_demo or args.rag_compare is not None:
+        from .rag.rag_demo import (
+            run_demo_suite,
+            run_full_eval,
+            run_grounded_demo,
+            run_interactive_chat,
+            run_single_comparison,
+        )
         cfg = ensure_config()
         model = cfg.default_model
         strategy = args.rag_eval_strategy
@@ -245,6 +256,20 @@ def main() -> None:
                 min_similarity=min_similarity,
                 improved_post_mode=post_mode if post_mode != "off" else "threshold",
                 question_limit=args.rag_question_limit,
+            )
+            return
+
+        if args.rag_grounded_demo:
+            run_grounded_demo(
+                cfg.api_key,
+                model,
+                strategy=strategy,
+                top_k=top_k,
+                top_k_before=top_k_before,
+                top_k_after=top_k_after,
+                min_similarity=min_similarity if min_similarity > 0 else 0.45,
+                post_mode=post_mode if post_mode != "off" else "threshold",
+                rewrite_enabled=rewrite_enabled,
             )
             return
 

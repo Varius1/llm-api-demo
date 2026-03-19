@@ -384,3 +384,72 @@ def run_demo_suite(
     ]
 
     run_mode_comparison_eval(agent, modes=modes, question_limit=question_limit)
+
+
+def run_grounded_demo(
+    api_key: str,
+    model: str,
+    strategy: str = "structural",
+    top_k: int = 5,
+    top_k_before: int | None = None,
+    top_k_after: int | None = None,
+    min_similarity: float = 0.45,
+    post_mode: PostRetrievalMode = "threshold",
+    rewrite_enabled: bool = True,
+) -> None:
+    """Демо для видео: обязательные источники/цитаты + режим "не знаю"."""
+    _header()
+    before_k = top_k_before if top_k_before is not None else top_k
+    after_k = top_k_after if top_k_after is not None else before_k
+
+    console.print(
+        f"[dim]Grounded RAG Demo · model={model} · strategy={strategy} · "
+        f"mode={post_mode} · min_similarity={min_similarity:.3f} · top_k={before_k}/{after_k}[/dim]\n"
+    )
+
+    agent = RagAgent(
+        api_key=api_key,
+        model=model,
+        index_dir=_INDEX_DIR,
+        strategy=strategy,
+        top_k=top_k,
+        top_k_before=before_k,
+        top_k_after=after_k,
+        min_similarity=min_similarity,
+        post_retrieval_mode=post_mode,
+        rewrite_enabled=rewrite_enabled,
+    )
+
+    console.print("[dim]Загружаем FAISS-индекс...[/dim]")
+    agent._ensure_index()
+    console.print(f"[dim]Индекс загружен: {agent._index.index.ntotal} векторов[/dim]\n")  # type: ignore[union-attr]
+
+    # 1) Обязательные источники/цитаты и проверка поддержки смысла на 10 вопросах
+    run_eval(agent)
+
+    # 2) Демонстрация режима "не знаю" на заведомо слабом запросе
+    console.rule("[bold]Проверка режима 'не знаю'[/bold]")
+    weak_question = "Какой официальный размер рынка квантовых аккумуляторов в 2035 году?"
+    console.print(f"[bold yellow]Вопрос:[/bold yellow] {weak_question}\n")
+
+    answer = agent.ask(
+        weak_question,
+        use_rag=True,
+        rewrite_enabled=rewrite_enabled,
+        post_retrieval_mode=post_mode,
+        top_k_before=before_k,
+        top_k_after=after_k,
+        min_similarity=min_similarity,
+    )
+    console.print(
+        Panel(
+            answer.text.strip(),
+            title="[bold green]RAG ответ[/bold green]",
+            border_style="green",
+            padding=(1, 2),
+        )
+    )
+    if answer.unknown_due_to_low_relevance:
+        console.print("[bold green]✓ Режим 'не знаю' сработал корректно[/bold green]")
+    else:
+        console.print("[bold red]✗ Режим 'не знаю' не сработал — увеличьте --rag-min-similarity[/bold red]")

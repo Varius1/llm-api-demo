@@ -1,6 +1,7 @@
 """RAG-агент: обёртка вокруг Agent + FaissIndex для ответов с/без контекста."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,12 +33,18 @@ _NO_RAG_SYSTEM_PROMPT = (
 )
 
 
+_TOKEN_RE = re.compile(r"[a-zA-Zа-яА-Я0-9_]+")
+
+
 @dataclass
 class RagAnswer:
     text: str
+    answer: str = ""
     chunks: list[tuple[Chunk, float]] = field(default_factory=list)
     used_rag: bool = False
     retrieval_stats: PostRetrievalStats | None = None
+    unknown_due_to_low_relevance: bool = False
+    relevance_threshold: float | None = None
 
     @property
     def sources(self) -> list[str]:
@@ -50,6 +57,47 @@ class RagAnswer:
                 seen.add(src)
                 result.append(src)
         return result
+
+    @property
+    def source_refs(self) -> list[dict[str, str]]:
+        refs: list[dict[str, str]] = []
+        for chunk, score in self.chunks:
+            refs.append(
+                {
+                    "source": str(chunk.metadata.get("file", chunk.metadata.get("source", "unknown"))),
+                    "section": str(chunk.metadata.get("section", "")),
+                    "chunk_id": str(chunk.metadata.get("chunk_id", "")),
+                    "score": f"{score:.3f}",
+                }
+            )
+        return refs
+
+    @property
+    def citations(self) -> list[str]:
+        quotes: list[str] = []
+        for chunk, _ in self.chunks:
+            snippet = " ".join(chunk.text.strip().split())
+            if len(snippet) > 220:
+                snippet = snippet[:220].rstrip() + "..."
+            quotes.append(snippet)
+        return quotes
+
+
+def _tokenize(text: str) -> set[str]:
+    return {m.group(0).lower() for m in _TOKEN_RE.finditer(text) if len(m.group(0)) >= 3}
+
+
+def _answer_supported_by_citations(answer: str, citations: list[str]) -> bool:
+    if not answer.strip() or not citations:
+        return False
+    a_tokens = _tokenize(answer)
+    if not a_tokens:
+        return False
+    c_tokens = _tokenize(" ".join(citations))
+    if not c_tokens:
+        return False
+    overlap = len(a_tokens & c_tokens) / len(a_tokens)
+    return overlap >= 0.1
 
 
 class RagAgent:
@@ -185,8 +233,61 @@ class RagAgent:
         lines.append(
             "Дай подробный ответ на русском языке (минимум 4–6 предложений), "
             "опираясь на информацию из источников выше. "
-            "Обязательно упомяни конкретные технические термины и концепции из документации."
+            "Обязательно упомяни конкретные технические термины и концепции из документации. "
+            "Верни ТОЛЬКО основной ответ без секций, списков источников и цитат."
         )
+        return "\n".join(lines)
+
+    def _format_sources(self, chunks: list[tuple[Chunk, float]]) -> list[str]:
+        lines: list[str] = []
+        for chunk, score in chunks:
+            source = chunk.metadata.get("file", chunk.metadata.get("source", "unknown"))
+            section = chunk.metadata.get("section", "")
+            chunk_id = chunk.metadata.get("chunk_id", "")
+            lines.append(
+                f"- source: {source} | section: {section or '-'} | chunk_id: {chunk_id or '-'} | score: {score:.3f}"
+            )
+        return lines
+
+    def _format_citations(self, chunks: list[tuple[Chunk, float]]) -> list[str]:
+        lines: list[str] = []
+        for chunk, _ in chunks:
+            chunk_id = chunk.metadata.get("chunk_id", "-")
+            snippet = " ".join(chunk.text.strip().split())
+            if len(snippet) > 220:
+                snippet = snippet[:220].rstrip() + "..."
+            lines.append(f'- [{chunk_id}] "{snippet}"')
+        return lines
+
+    def _compose_structured_output(
+        self,
+        *,
+        answer: str,
+        chunks: list[tuple[Chunk, float]],
+        unknown_due_to_low_relevance: bool,
+        relevance_threshold: float | None,
+    ) -> str:
+        lines = ["Ответ:", answer.strip() or "Не удалось сформировать ответ.", "", "Источники:"]
+        if chunks:
+            lines.extend(self._format_sources(chunks))
+        else:
+            threshold_text = f"{relevance_threshold:.3f}" if relevance_threshold is not None else "n/a"
+            lines.append(f"- нет релевантных источников (ниже порога relevance={threshold_text})")
+
+        lines.extend(["", "Цитаты:"])
+        if chunks:
+            lines.extend(self._format_citations(chunks))
+        else:
+            lines.append("- нет цитат: релевантные чанки не найдены")
+
+        if unknown_due_to_low_relevance:
+            lines.extend(
+                [
+                    "",
+                    "Комментарий:",
+                    "Найденный контекст недостаточно релевантен, поэтому ответ дан в режиме 'не знаю'.",
+                ]
+            )
         return "\n".join(lines)
 
     def ask(
@@ -236,9 +337,63 @@ class RagAgent:
                     top_k_after=top_k_after,
                     min_similarity=min_similarity,
                 )
+                effective_threshold = self._min_similarity if min_similarity is None else min_similarity
+                effective_mode = self._post_retrieval_mode if post_retrieval_mode is None else post_retrieval_mode
+
+                low_relevance = (
+                    effective_mode in {"threshold", "rerank"}
+                    and effective_threshold > 0.0
+                    and retrieval_stats.fallback_used
+                )
+
+                if low_relevance:
+                    answer_text = (
+                        "Не знаю: в найденном контексте нет достаточно релевантной информации. "
+                        "Уточните вопрос: добавьте термин, раздел курса или более конкретный пример."
+                    )
+                    text = self._compose_structured_output(
+                        answer=answer_text,
+                        chunks=chunks,
+                        unknown_due_to_low_relevance=True,
+                        relevance_threshold=effective_threshold,
+                    )
+                    return RagAnswer(
+                        text=text,
+                        answer=answer_text,
+                        chunks=chunks,
+                        used_rag=True,
+                        retrieval_stats=retrieval_stats,
+                        unknown_due_to_low_relevance=True,
+                        relevance_threshold=effective_threshold,
+                    )
+
                 prompt = self._build_rag_prompt(question, chunks)
-                text = agent.run(prompt)
-                return RagAnswer(text=text, chunks=chunks, used_rag=True, retrieval_stats=retrieval_stats)
+                answer_text = agent.run(prompt).strip()
+
+                # Мягкая проверка: если связь с цитатами низкая, оставляем ответ,
+                # но добавляем предупреждение в конец.
+                if not _answer_supported_by_citations(answer_text, [c.text for c, _ in chunks]):
+                    answer_text = (
+                        f"{answer_text}\n\n"
+                        "Примечание: часть утверждений может выходить за пределы предоставленных цитат; "
+                        "для надёжности уточните вопрос."
+                    ).strip()
+
+                text = self._compose_structured_output(
+                    answer=answer_text,
+                    chunks=chunks,
+                    unknown_due_to_low_relevance=low_relevance,
+                    relevance_threshold=effective_threshold if effective_threshold > 0 else None,
+                )
+                return RagAnswer(
+                    text=text,
+                    answer=answer_text,
+                    chunks=chunks,
+                    used_rag=True,
+                    retrieval_stats=retrieval_stats,
+                    unknown_due_to_low_relevance=low_relevance,
+                    relevance_threshold=effective_threshold if effective_threshold > 0 else None,
+                )
             else:
                 text = agent.run(question)
-                return RagAnswer(text=text, chunks=[], used_rag=False)
+                return RagAnswer(text=text, answer=text, chunks=[], used_rag=False)

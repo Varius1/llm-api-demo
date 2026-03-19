@@ -689,6 +689,13 @@ llm-cli --rag-chat
 - добавлен post-retrieval этап: `threshold` (порог similarity) или `rerank` (эвристический реранкинг);
 - добавлены параметры `top_k` до/после фильтрации: `--rag-top-k-before`, `--rag-top-k-after`;
 - добавлено сравнение режимов в demo: baseline, rewrite-only, improved.
+- формат RAG-ответа сделан обязательным: `Ответ` + `Источники (source + section + chunk_id)` + `Цитаты`;
+- при слабой релевантности (ниже порога) ассистент отвечает в режиме **«не знаю»** и просит уточнение.
+
+Очень коротко:
+- RAG-ответ теперь всегда содержит: ответ, источники и цитаты.
+- Eval на 10 вопросах показывает наличие источников/цитат и проверку опоры ответа на цитаты.
+- Добавлена демо-команда `--rag-grounded-demo` для записи видео.
 
 ```bash
 # Demo-команда для задания (режимы + итоговая таблица)
@@ -699,6 +706,16 @@ llm-cli --rag-demo-suite \
   --rag-top-k-before 8 \
   --rag-top-k-after 4 \
   --rag-question-limit 10
+
+# Видео-демо по заданию:
+#  - 10 вопросов с проверками sources/citations/поддержки смысла
+#  - отдельная проверка режима "не знаю" при слабом контексте
+llm-cli --rag-grounded-demo \
+  --rag-eval-strategy structural \
+  --rag-post-mode threshold \
+  --rag-min-similarity 0.45 \
+  --rag-top-k-before 8 \
+  --rag-top-k-after 4
 ```
 
 ---

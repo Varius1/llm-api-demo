@@ -1,6 +1,7 @@
 """10 контрольных вопросов и режимы оценки RAG."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
     from .relevance import PostRetrievalMode
 
 console = Console()
+_TOKEN_RE = re.compile(r"[a-zA-Zа-яА-Я0-9_]+")
 
 EVAL_QUESTIONS: list[dict] = [
     {
@@ -102,6 +104,9 @@ class EvalResult:
 
     keywords_hit_no_rag: int = 0
     keywords_hit_rag: int = 0
+    has_sources: bool = False
+    has_citations: bool = False
+    answer_supported_by_citations: bool = False
 
     @property
     def rag_wins(self) -> bool:
@@ -123,6 +128,23 @@ class EvalResult:
 def _short(text: str, max_len: int = 120) -> str:
     text = text.strip().replace("\n", " ")
     return text[:max_len] + "…" if len(text) > max_len else text
+
+
+def _tokenize(text: str) -> set[str]:
+    return {m.group(0).lower() for m in _TOKEN_RE.finditer(text) if len(m.group(0)) >= 3}
+
+
+def _is_supported(answer: str, citations: list[str]) -> bool:
+    if not answer.strip() or not citations:
+        return False
+    a_tokens = _tokenize(answer)
+    if not a_tokens:
+        return False
+    c_tokens = _tokenize(" ".join(citations))
+    if not c_tokens:
+        return False
+    overlap = len(a_tokens & c_tokens) / len(a_tokens)
+    return overlap >= 0.2
 
 
 def run_eval(rag_agent: RagAgent) -> list[EvalResult]:
@@ -155,12 +177,15 @@ def run_eval(rag_agent: RagAgent) -> list[EvalResult]:
             question=q["question"],
             expected_keywords=q["expected_keywords"],
             expected_sources=q["expected_sources"],
-            answer_no_rag=ans_no_rag.text,
-            answer_rag=ans_rag.text,
+            answer_no_rag=ans_no_rag.answer or ans_no_rag.text,
+            answer_rag=ans_rag.answer or ans_rag.text,
             rag_sources=ans_rag.sources,
         )
-        result.keywords_hit_no_rag = result._count_hits(ans_no_rag.text, q["expected_keywords"])
-        result.keywords_hit_rag = result._count_hits(ans_rag.text, q["expected_keywords"])
+        result.keywords_hit_no_rag = result._count_hits(result.answer_no_rag, q["expected_keywords"])
+        result.keywords_hit_rag = result._count_hits(result.answer_rag, q["expected_keywords"])
+        result.has_sources = len(ans_rag.source_refs) > 0
+        result.has_citations = len(ans_rag.citations) > 0
+        result.answer_supported_by_citations = _is_supported(result.answer_rag, ans_rag.citations)
 
         # Показываем результат вопроса прямо сейчас
         _print_question_result(result)
@@ -364,6 +389,12 @@ def _print_question_result(r: EvalResult) -> None:
 
     console.print(tbl)
     console.print(f"  [dim]Источники RAG: {sources_str}[/dim]")
+    checks = (
+        f"источники: {'✓' if r.has_sources else '✗'}  |  "
+        f"цитаты: {'✓' if r.has_citations else '✗'}  |  "
+        f"смысл поддержан цитатами: {'✓' if r.answer_supported_by_citations else '✗'}"
+    )
+    console.print(f"  [dim]Проверка обязательных полей: {checks}[/dim]")
     if r.rag_wins:
         verdict = "[bold green]✓ RAG выиграл[/bold green]"
     elif r.rag_ties:
@@ -384,11 +415,16 @@ def _print_summary_table(results: list[EvalResult]) -> None:
     tbl.add_column("Без RAG", justify="center", width=10)
     tbl.add_column("С RAG", justify="center", width=10)
     tbl.add_column("Источники", ratio=2)
+    tbl.add_column("Цитаты", justify="center", width=8)
+    tbl.add_column("Поддержка", justify="center", width=10)
     tbl.add_column("Итог", justify="center", width=14)
 
     rag_wins_count = 0
     ties_count = 0
     no_rag_wins_count = 0
+    sources_ok_count = 0
+    citations_ok_count = 0
+    support_ok_count = 0
 
     for r in results:
         kw_total = len(r.expected_keywords)
@@ -402,12 +438,21 @@ def _print_summary_table(results: list[EvalResult]) -> None:
             verdict_markup = "[red]✗ no-RAG[/red]"
             no_rag_wins_count += 1
 
+        if r.has_sources:
+            sources_ok_count += 1
+        if r.has_citations:
+            citations_ok_count += 1
+        if r.answer_supported_by_citations:
+            support_ok_count += 1
+
         tbl.add_row(
             str(r.question_id),
             _short(r.question, max_len=60),
             f"{r.keywords_hit_no_rag}/{kw_total}",
             f"[bold]{r.keywords_hit_rag}/{kw_total}[/bold]",
             ", ".join(r.rag_sources[:2]) or "—",
+            "✓" if r.has_citations else "✗",
+            "✓" if r.answer_supported_by_citations else "✗",
             verdict_markup,
         )
 
@@ -418,6 +463,11 @@ def _print_summary_table(results: list[EvalResult]) -> None:
         f"[yellow]≈ Ничья[/yellow]: [cyan]{ties_count}[/cyan]  "
         f"[red]✗ no-RAG лучше[/red]: [cyan]{no_rag_wins_count}[/cyan]"
         f"  [dim](по ключевым словам в ответе)[/dim]"
+    )
+    console.print(
+        f"[cyan]Источники в ответах[/cyan]: {sources_ok_count}/{len(results)}  ·  "
+        f"[cyan]Цитаты в ответах[/cyan]: {citations_ok_count}/{len(results)}  ·  "
+        f"[cyan]Смысл поддержан цитатами[/cyan]: {support_ok_count}/{len(results)}"
     )
     console.print()
 
