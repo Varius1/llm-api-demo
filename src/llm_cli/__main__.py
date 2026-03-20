@@ -165,6 +165,22 @@ def _build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Сколько контрольных вопросов прогонять в --rag-demo-suite (default: 10)",
     )
+    parser.add_argument(
+        "--rag-memory-chat",
+        action="store_true",
+        help="Интерактивный RAG-чат с историей диалога и памятью задачи (task state)",
+    )
+    parser.add_argument(
+        "--rag-memory-demo",
+        action="store_true",
+        help="Автодемо: два сценария по 11–12 сообщений с RAG + памятью задачи (для видео)",
+    )
+    parser.add_argument(
+        "--rag-memory-pause",
+        type=float,
+        default=0.3,
+        help="Пауза между сообщениями в автодемо (секунды, default: 0.3)",
+    )
     return parser
 
 
@@ -317,6 +333,30 @@ def main() -> None:
                 rewrite_enabled=rewrite_enabled,
             )
             return
+
+    if args.rag_memory_chat or args.rag_memory_demo:
+        from .rag.memory_demo import run_memory_chat, run_memory_demo
+        cfg = ensure_config()
+        model = cfg.default_model
+        strategy = args.rag_eval_strategy
+        top_k = args.rag_top_k
+
+        if args.rag_memory_chat:
+            run_memory_chat(
+                cfg.api_key,
+                model,
+                strategy=strategy,
+                top_k=top_k,
+            )
+        else:
+            run_memory_demo(
+                cfg.api_key,
+                model,
+                strategy=strategy,
+                top_k=top_k,
+                pause=args.rag_memory_pause,
+            )
+        return
 
     cfg = ensure_config()
 

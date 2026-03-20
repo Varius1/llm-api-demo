@@ -718,6 +718,38 @@ llm-cli --rag-grounded-demo \
   --rag-top-k-after 4
 ```
 
+### Мини-чат с RAG + памятью задачи (production-like)
+
+Реализован мини-чат, который:
+- хранит историю диалога между ходами (sliding window, до 20 ходов в контексте)
+- при каждом новом вопросе ищет релевантный контекст через RAG (FAISS + query rewrite)
+- отвечает с учётом найденной информации и истории беседы
+- всегда выводит источники (файл, раздел, chunk_id, score)
+
+**Память задачи (task state)** автоматически извлекает из сообщений пользователя:
+- `goal` — цель диалога («хочу изучить...», «нужно разобраться...»)
+- `clarifications` — уточнения («точнее», «имею в виду», «в частности»)
+- `constraints` — ограничения и термины («только», «без», «термин:»)
+
+Блок памяти задачи инжектируется в каждый запрос к LLM как system-сообщение, что не позволяет ассистенту терять цель на длинных диалогах.
+
+**Проверка** — два автоматических сценария по 11–12 сообщений без ввода с клавиатуры:
+- Сценарий 1 «Токенизация в NLP»: BPE, WordPiece, special tokens, Fast Tokenizer, padding/truncation, итоговый вопрос
+- Сценарий 2 «Fine-tuning BERT»: датасет, Trainer API, learning rate, метрики, сохранение модели, итоговый пайплайн
+
+```bash
+# Автодемо: два длинных сценария, источники при каждом ответе (для записи видео)
+python -m llm_cli --rag-memory-demo
+
+# С паузой между сообщениями
+python -m llm_cli --rag-memory-demo --rag-memory-pause 1.5
+
+# Интерактивный чат с памятью задачи
+python -m llm_cli --rag-memory-chat
+```
+
+Команды в интерактивном чате: `/memory` — показать память задачи, `/history` — история, `/reset` — сброс, `/quit` — выход.
+
 ---
 
 ## Структура проекта
@@ -737,5 +769,16 @@ src/llm_cli/
   memory.py         — 3-слойная модель памяти (WorkingMemory, LongTermMemory, MemoryManager)
   models.py         — Pydantic-модели данных (включая ToolCall, ToolDefinition)
   strategy.py       — стратегии управления контекстом (Sliding Window, Sticky Facts)
-  rag/              — RAG пайплайн (chunking, embeddings, FAISS, compare, demo)
+  rag/
+    memory_chat.py  — RagMemoryChat, TaskMemory, RagMemoryAnswer (чат с историей + task state)
+    memory_demo.py  — run_memory_chat(), run_memory_demo() (интерактив + автосценарии)
+    rag_agent.py    — RagAgent (RAG поиск, query rewrite, post-retrieval)
+    rag_demo.py     — демо-функции для отдельных команд
+    chunker.py      — FixedChunker, StructuralChunker
+    embedder.py     — Embedder (all-MiniLM-L6-v2, 384-dim)
+    indexer.py      — FaissIndex (IndexFlatIP, cosine similarity)
+    loader.py       — load_documents() (MDX + frontmatter)
+    relevance.py    — post-retrieval: threshold / rerank
+    eval.py         — 10 контрольных вопросов, сравнительные таблицы
+    pipeline.py     — run_pipeline() (индексация обеих стратегий)
 ```
