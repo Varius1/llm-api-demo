@@ -16,6 +16,28 @@ from .models import (
 )
 
 
+def _merge_system_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """Объединить все system-сообщения в одно первое.
+
+    Некоторые локальные модели (например Qwen3 через llama.cpp) требуют
+    строго одного system-сообщения и строго в начале списка.
+    """
+    system_parts: list[str] = []
+    non_system: list[ChatMessage] = []
+    for msg in messages:
+        if msg.role == "system":
+            if msg.content:
+                system_parts.append(msg.content)
+        else:
+            non_system.append(msg)
+
+    if not system_parts:
+        return non_system
+
+    merged = ChatMessage(role="system", content="\n\n".join(system_parts))
+    return [merged, *non_system]
+
+
 class OpenRouterClient:
     """Синхронный клиент к OpenRouter (совместим с OpenAI Chat Completions)."""
 
@@ -26,6 +48,10 @@ class OpenRouterClient:
         self._client = httpx.Client(
             timeout=httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0),
         )
+
+    @property
+    def is_local(self) -> bool:
+        return self.base_url != OPENROUTER_URL
 
     def close(self) -> None:
         self._client.close()
@@ -38,6 +64,9 @@ class OpenRouterClient:
         transforms: list[str] | None = None,
         tools: list[ToolDefinition] | None = None,
     ) -> ChatResponse:
+        if self.is_local:
+            messages = _merge_system_messages(messages)
+
         request = ChatRequest(
             model=model,
             messages=messages,

@@ -65,7 +65,9 @@ def print_welcome(model: str, temperature: float | None) -> None:
             "  [yellow]/invariant-add <кат> <название> | <описание>[/yellow] — добавить  |  [yellow]/invariant-del <ID>[/yellow] — удалить\n"
             "  [yellow]/invariant-clear[/yellow] — очистить все  |  кат: [yellow]arch[/yellow] / [yellow]tech[/yellow] / [yellow]stack[/yellow] / [yellow]biz[/yellow]\n"
             "  [yellow]/demo-invariants[/yellow] — демо: инварианты + тест конфликта\n"
-            "  [yellow]/temp 0.7[/yellow] — температура, [yellow]/model <id>[/yellow] — модель\n"
+            "  [yellow]/model local[/yellow] — переключить на локальную LLM (llama.cpp)  |  [yellow]/model openrouter[/yellow] — переключить на OpenRouter\n"
+            "  [yellow]/model <provider/model-id>[/yellow] — задать конкретную OpenRouter-модель\n"
+            "  [yellow]/temp 0.7[/yellow] — температура\n"
             "  [yellow]/overflow 9000[/yellow] — тест переполнения, [yellow]/clear[/yellow] — очистить историю\n"
             "  [yellow]exit[/yellow] — выход  |  двойной Enter — отправить сообщение",
             title="[bold cyan]LLM CLI[/bold cyan]",

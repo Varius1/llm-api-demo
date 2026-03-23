@@ -9,7 +9,7 @@ from .api import OpenRouterClient
 from .benchmark import run_benchmark
 from .chat import run_chat, run_chat_with_tools
 from .config import ensure_config
-from .models import BENCHMARK_PROMPT
+from .models import BENCHMARK_PROMPT, LOCAL_BASE_URL, LOCAL_MODEL_ID, OPENROUTER_URL
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -360,14 +360,22 @@ def main() -> None:
 
     cfg = ensure_config()
 
+    if cfg.use_local:
+        _base_url = cfg.local_url
+        _api_key = "local"
+        cfg.default_model = LOCAL_MODEL_ID
+    else:
+        _base_url = OPENROUTER_URL
+        _api_key = cfg.api_key
+
     if args.tools:
-        with OpenRouterClient(cfg.api_key) as client:
+        with OpenRouterClient(_api_key, base_url=_base_url) as client:
             run_chat_with_tools(client, cfg)
         return
 
     temperature = args.temp if args.temp is not None else cfg.temperature
 
-    with OpenRouterClient(cfg.api_key) as client:
+    with OpenRouterClient(_api_key, base_url=_base_url) as client:
         if args.compare:
             prompt = args.prompt or cfg.benchmark_prompt or BENCHMARK_PROMPT
             run_benchmark(client, prompt, cfg.models, temperature)

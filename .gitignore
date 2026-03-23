@@ -24,3 +24,19 @@ local.properties
 # Legacy Android/Gradle artifacts
 .gradle/
 gradle/
+
+# ML models and FAISS indexes
+all-MiniLM-L6-v2/
+data/index/
+
+# Scratch / experiment scripts in root
+buggy_calc.py
+fact.py
+math.py
+test.py
+test_add.py
+test_auto_fsm.py
+test_bug.py
+test_fact.py
+test_fsm_transition.py
+test_math.py

@@ -27,7 +27,7 @@ from .display import (
     print_welcome,
 )
 from .memory import PROFILE_EXPERTISE_OPTIONS, PROFILE_FORMAT_OPTIONS, PROFILE_STYLE_OPTIONS, UserProfile
-from .models import BENCHMARK_PROMPT, StrategyType
+from .models import BENCHMARK_PROMPT, LOCAL_BASE_URL, LOCAL_MODEL_ID, OPENROUTER_URL, StrategyType
 from .strategy import STRATEGY_LABELS
 
 console = Console()
@@ -397,10 +397,22 @@ def _handle_temp(text: str, agent: Agent) -> None:
 def _handle_model(text: str, agent: Agent) -> None:
     raw = text.removeprefix("/model").strip()
     if not raw:
-        console.print(f"[dim]Текущая модель: {agent.model}[/dim]")
+        provider = "локальная" if agent._client.base_url == LOCAL_BASE_URL else "OpenRouter"
+        console.print(f"[dim]Текущая модель: {agent.model} ({provider})[/dim]")
         return
-    agent.model = raw
-    console.print(f"[green]Модель: {raw}[/green]\n")
+    if raw == "local":
+        agent._client.base_url = LOCAL_BASE_URL
+        agent._client.api_key = "local"
+        agent.model = LOCAL_MODEL_ID
+        console.print("[green]Переключено на локальную модель (llama.cpp)[/green]\n")
+    elif raw == "openrouter":
+        agent._client.base_url = OPENROUTER_URL
+        console.print("[green]Переключено на OpenRouter[/green]\n")
+        console.print("[dim]Укажите модель: /model <provider/model-id>[/dim]\n")
+    else:
+        agent._client.base_url = OPENROUTER_URL
+        agent.model = raw
+        console.print(f"[green]Модель OpenRouter: {raw}[/green]\n")
 
 
 def _handle_compress(text: str, agent: Agent) -> None:

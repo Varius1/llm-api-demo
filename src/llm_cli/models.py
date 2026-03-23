@@ -147,6 +147,9 @@ class BenchmarkResult(BaseModel):
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+LOCAL_BASE_URL = "http://127.0.0.1:8081/v1/chat/completions"
+LOCAL_MODEL_ID = "local"
+
 DEFAULT_MODEL = "google/gemma-2-9b-it"
 
 DEFAULT_MODEL_INPUT_PRICE_PER_MILLION = 0.03

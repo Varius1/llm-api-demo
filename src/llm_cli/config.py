@@ -10,7 +10,7 @@ from platformdirs import user_config_dir
 from rich.console import Console
 from rich.prompt import Prompt
 
-from .models import BENCHMARK_MODELS, DEFAULT_MODEL, ModelConfig
+from .models import BENCHMARK_MODELS, DEFAULT_MODEL, LOCAL_BASE_URL, ModelConfig
 
 APP_NAME = "llm-cli"
 CONFIG_FILENAME = "config.toml"
@@ -30,6 +30,8 @@ def _serialize_toml(cfg: AppConfig) -> str:
     lines.append(f'default_model = "{cfg.default_model}"')
     lines.append(f"temperature = {cfg.temperature}")
     lines.append(f'benchmark_prompt = "{cfg.benchmark_prompt}"')
+    lines.append(f"use_local = {str(cfg.use_local).lower()}")
+    lines.append(f'local_url = "{cfg.local_url}"')
     lines.append("")
 
     for m in cfg.models:
@@ -55,12 +57,16 @@ class AppConfig:
         temperature: float = DEFAULT_TEMPERATURE,
         benchmark_prompt: str = "",
         models: list[ModelConfig] | None = None,
+        use_local: bool = True,
+        local_url: str = LOCAL_BASE_URL,
     ):
         self.api_key = api_key
         self.default_model = default_model
         self.temperature = temperature
         self.benchmark_prompt = benchmark_prompt
         self.models = models if models is not None else list(BENCHMARK_MODELS)
+        self.use_local = use_local
+        self.local_url = local_url
 
     def save(self) -> None:
         path = _config_path()
@@ -96,6 +102,8 @@ class AppConfig:
             temperature=general.get("temperature", DEFAULT_TEMPERATURE),
             benchmark_prompt=general.get("benchmark_prompt", ""),
             models=models if models else list(BENCHMARK_MODELS),
+            use_local=general.get("use_local", True),
+            local_url=general.get("local_url", LOCAL_BASE_URL),
         )
 
 
@@ -109,7 +117,7 @@ def ensure_config() -> AppConfig:
     if env_key:
         cfg.api_key = env_key
 
-    if cfg.api_key:
+    if cfg.api_key or cfg.use_local:
         return cfg
 
     console.print()
