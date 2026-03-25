@@ -787,6 +787,42 @@ llm-cli --rag-grounded-demo \
   --rag-top-k-after 4
 ```
 
+### Локальный RAG: llama.cpp + FAISS (полностью офлайн)
+
+Полный RAG-пайплайн без облачных API: retrieval через FAISS + `all-MiniLM-L6-v2` локально, генерация через `llama-server` (llama.cpp).
+
+```bash
+# Локальный RAG — 3 демо-вопроса, OpenRouter не нужен
+python -m llm_cli --rag-local-demo
+
+# Настроить количество вопросов и параметры
+python -m llm_cli --rag-local-demo --rag-question-limit 1
+python -m llm_cli --rag-local-demo --rag-local-url http://127.0.0.1:8081/v1/chat/completions
+```
+
+Для каждого вопроса выводится:
+- ответ **без RAG** (модель отвечает сама по себе) и **с RAG** (модель видит top-5 чанков из FAISS)
+- найденные источники: файл, раздел, score релевантности
+- время ответа для обоих режимов
+- итоговая таблица с метриками и схемой архитектуры
+
+Перед запуском нужен работающий `llama-server`:
+
+```bash
+cd ~/llama.cpp
+./build/bin/llama-server \
+  -m "/path/to/model.gguf" \
+  --host 127.0.0.1 --port 8081 \
+  --ctx-size 248000 --n-gpu-layers 555 \
+  --flash-attn on --no-mmap \
+  --chat-template-kwargs '{"enable_thinking": false}'
+```
+
+Поток данных:
+```
+Вопрос → all-MiniLM-L6-v2 → FAISS (data/index/structural) → top-5 чанков → llama-server :8081 → Ответ
+```
+
 ### Мини-чат с RAG + памятью задачи (production-like)
 
 Реализован мини-чат, который:
@@ -826,7 +862,7 @@ python -m llm_cli --rag-memory-chat
 ```
 src/llm_cli/
   __init__.py       — пакет
-  __main__.py       — точка входа, argparse (--mcp, --agent-demo, --tools, --compare, --rag-index, --rag-demo)
+  __main__.py       — точка входа, argparse (--mcp, --agent-demo, --tools, --compare, --rag-index, --rag-demo, --rag-local-demo)
   agent.py          — LLM-агент (история диалога, 4 стратегии, ветки, модель памяти, tool calling)
   api.py            — HTTP-клиент OpenRouter (httpx, поддержка tool calling)
   benchmark.py      — бенчмарк моделей + модель-судья

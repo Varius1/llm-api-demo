@@ -3,6 +3,7 @@
 Режимы:
   - run_single_comparison() — детальный side-by-side для одного вопроса
   - run_full_eval()         — 10 контрольных вопросов с итоговой таблицей
+  - run_local_rag_demo()    — полностью локальный RAG (llama.cpp + FAISS + MiniLM)
 """
 from __future__ import annotations
 
@@ -453,3 +454,228 @@ def run_grounded_demo(
         console.print("[bold green]✓ Режим 'не знаю' сработал корректно[/bold green]")
     else:
         console.print("[bold red]✗ Режим 'не знаю' не сработал — увеличьте --rag-min-similarity[/bold red]")
+
+
+# ---------------------------------------------------------------------------
+# Локальная LLM + RAG (llama.cpp на порту 8081)
+# ---------------------------------------------------------------------------
+
+_LOCAL_DEMO_QUESTIONS = [
+    {
+        "id": 1,
+        "question": "Что такое токенизатор и зачем он нужен в NLP?",
+        "expected_keywords": ["токен", "token", "subword", "tokenizer", "текст", "text"],
+        "hint": "Базовое понятие — как текст превращается в числа для модели",
+    },
+    {
+        "id": 5,
+        "question": "Что такое fine-tuning и чем он отличается от pre-training предобученной модели?",
+        "expected_keywords": ["fine-tuning", "fine-tune", "pre-train", "pretrain", "задача", "task"],
+        "hint": "Как переиспользуют предобученные трансформеры для конкретных задач",
+    },
+    {
+        "id": 8,
+        "question": "Что такое BERT и в чём его архитектурные особенности по сравнению с GPT?",
+        "expected_keywords": ["bert", "encoder", "bidirectional", "masked", "mlm"],
+        "hint": "Энкодерная модель с двунаправленным вниманием и предобучением на MLM",
+    },
+]
+
+
+def run_local_rag_demo(
+    base_url: str = "http://127.0.0.1:8081/v1/chat/completions",
+    model_id: str = "local",
+    strategy: str = "structural",
+    top_k: int = 5,
+    question_limit: int = 3,
+) -> None:
+    """Полностью локальный RAG-демо: FAISS + MiniLM (retrieval) + llama.cpp (генерация).
+
+    API-ключ OpenRouter не нужен. Локальная модель должна быть запущена на base_url.
+    """
+    console.print()
+    console.print(Panel(
+        Text.assemble(
+            ("Local LLM + RAG Demo", "bold magenta"),
+            "\n",
+            ("FAISS · all-MiniLM-L6-v2 · llama.cpp (Qwen3.5-27B)", "dim"),
+            "\n",
+            (f"Эндпоинт: {base_url}", "dim cyan"),
+        ),
+        border_style="magenta",
+        padding=(1, 4),
+    ))
+    console.print()
+
+    agent = RagAgent(
+        api_key="local",
+        model=model_id,
+        index_dir=_INDEX_DIR,
+        strategy=strategy,
+        top_k=top_k,
+        rewrite_enabled=False,
+        temperature=0.3,
+        base_url=base_url,
+    )
+
+    console.print("[dim]Загружаем FAISS-индекс...[/dim]")
+    agent._ensure_index()
+    console.print(f"[dim]Индекс загружен: {agent._index.index.ntotal} векторов[/dim]\n")  # type: ignore[union-attr]
+
+    questions = _LOCAL_DEMO_QUESTIONS[:max(1, question_limit)]
+
+    summary_rows: list[tuple[str, str, str, str, str]] = []
+
+    for idx, q in enumerate(questions, 1):
+        console.rule(f"[bold]Вопрос {idx}/{len(questions)}[/bold]")
+        console.print(f"[bold yellow]{q['question']}[/bold yellow]")
+        console.print(f"[dim]{q['hint']}[/dim]\n")
+
+        # --- Без RAG ---
+        console.print("[bold red][ БЕЗ RAG ][/bold red] Запрос к локальной модели...")
+        t0 = time.perf_counter()
+        ans_no_rag = agent.ask(q["question"], use_rag=False)
+        elapsed_no_rag = time.perf_counter() - t0
+        console.print(f"[dim]Готово за {elapsed_no_rag:.1f}с[/dim]\n")
+
+        # --- С RAG ---
+        console.print("[bold green][ С RAG ][/bold green] Ищем релевантные чанки в FAISS...")
+        t0 = time.perf_counter()
+        ans_rag = agent.ask(q["question"], use_rag=True)
+        elapsed_rag = time.perf_counter() - t0
+        console.print(f"[dim]Готово за {elapsed_rag:.1f}с[/dim]\n")
+
+        # Найденные источники
+        if ans_rag.chunks:
+            src_tbl = Table(box=box.SIMPLE, show_header=True, header_style="bold dim")
+            src_tbl.add_column("#", width=3, justify="right")
+            src_tbl.add_column("Файл / Раздел")
+            src_tbl.add_column("Score", justify="right", width=8)
+            src_tbl.add_column("Текст (начало)", ratio=1)
+            for i, (chunk, score) in enumerate(ans_rag.chunks, 1):
+                src = chunk.metadata.get("file", chunk.metadata.get("source", "?"))
+                section = chunk.metadata.get("section", "")
+                snippet = chunk.text.strip().replace("\n", " ")[:80] + "…"
+                src_tbl.add_row(str(i), f"{src} · {section}" if section else src, f"{score:.3f}", snippet)
+            console.print(Rule("[dim]Найденные источники[/dim]"))
+            console.print(src_tbl)
+            console.print()
+
+        # Side-by-side панели
+        console.print(Rule("[bold]Сравнение ответов[/bold]"))
+        console.print()
+        panel_no_rag = Panel(
+            ans_no_rag.text.strip(),
+            title=f"[bold red]БЕЗ RAG[/bold red]  [dim]{elapsed_no_rag:.1f}с[/dim]",
+            border_style="red",
+            padding=(1, 2),
+        )
+        panel_rag = Panel(
+            ans_rag.answer.strip() if ans_rag.answer else ans_rag.text.strip(),
+            title=f"[bold green]С RAG ({len(ans_rag.chunks)} источников)[/bold green]  [dim]{elapsed_rag:.1f}с[/dim]",
+            subtitle=f"[dim]{', '.join(ans_rag.sources[:3])}[/dim]" if ans_rag.sources else None,
+            border_style="green",
+            padding=(1, 2),
+        )
+        if console.width >= 120:
+            console.print(Columns([panel_no_rag, panel_rag], equal=True, expand=True))
+        else:
+            console.print(panel_no_rag)
+            console.print()
+            console.print(panel_rag)
+
+        # Мини-оценка по ключевым словам (только по тексту ответа модели)
+        kw = q["expected_keywords"]
+        hits_no_rag = sum(1 for k in kw if k.lower() in ans_no_rag.text.lower())
+        hits_rag = sum(1 for k in kw if k.lower() in (ans_rag.answer or ans_rag.text).lower())
+        console.print()
+        if hits_rag > hits_no_rag:
+            verdict = "[bold green]✓ RAG добавил полезный контекст[/bold green]"
+        elif hits_rag == hits_no_rag:
+            verdict = "[yellow]≈ Результаты сопоставимы[/yellow]"
+        else:
+            verdict = "[red]✗ Без RAG больше ключевых слов[/red]"
+        console.print(
+            f"[dim]Ключевые слова: без RAG — {hits_no_rag}/{len(kw)}, с RAG — {hits_rag}/{len(kw)}[/dim]  {verdict}"
+        )
+        console.print()
+
+        avg_score = (
+            sum(s for _, s in ans_rag.chunks) / len(ans_rag.chunks)
+            if ans_rag.chunks else 0.0
+        )
+        summary_rows.append((
+            q["question"][:60] + ("…" if len(q["question"]) > 60 else ""),
+            f"{hits_no_rag}/{len(kw)}",
+            f"{hits_rag}/{len(kw)}",
+            f"{elapsed_no_rag:.1f}с",
+            f"{elapsed_rag:.1f}с",
+            f"{len(ans_rag.chunks)} · {avg_score:.2f}",
+        ))
+
+    # Итоговая таблица
+    console.rule("[bold magenta]Итоги Local LLM + RAG[/bold magenta]")
+    console.print()
+    tbl = Table(
+        title=f"Локальная модель: {model_id}  ·  Retrieval: FAISS structural",
+        box=box.HEAVY_HEAD,
+        expand=True,
+    )
+    tbl.add_column("Вопрос", ratio=3)
+    tbl.add_column("Без RAG\n(hit)", justify="center", width=10)
+    tbl.add_column("С RAG\n(hit)", justify="center", width=10)
+    tbl.add_column("Время\nбез RAG", justify="center", width=10)
+    tbl.add_column("Время\nс RAG", justify="center", width=10)
+    tbl.add_column("Источники\n(n · avg_sim)", justify="center", width=16)
+
+    rag_wins = 0
+    rag_ties = 0
+    for row in summary_rows:
+        q_text, h_no, h_rag, t_no, t_rag, src_info = row
+        h_no_int = int(h_no.split("/")[0])
+        h_rag_int = int(h_rag.split("/")[0])
+        if h_rag_int > h_no_int:
+            rag_wins += 1
+            rag_markup = f"[bold green]{h_rag}[/bold green]"
+        elif h_rag_int == h_no_int:
+            rag_ties += 1
+            rag_markup = f"[yellow]{h_rag}[/yellow]"
+        else:
+            rag_markup = f"[red]{h_rag}[/red]"
+        tbl.add_row(q_text, h_no, rag_markup, t_no, t_rag, f"[cyan]{src_info}[/cyan]")
+
+    console.print(tbl)
+    console.print()
+
+    # Интерпретация результата для видео
+    n = len(summary_rows)
+    if rag_wins > 0:
+        verdict_text = (
+            f"[bold green]RAG улучшил ответ в {rag_wins}/{n} случаях[/bold green]  "
+            f"[dim](по ключевым словам)[/dim]"
+        )
+    elif rag_ties == n:
+        verdict_text = (
+            f"[bold yellow]Результаты сопоставимы ({n}/{n} ничья)[/bold yellow]  "
+            f"[dim]Qwen3.5-27B хорошо знает материал сам по себе — RAG добавляет точные источники[/dim]"
+        )
+    else:
+        verdict_text = (
+            f"[bold yellow]Без RAG — больше терминов в ответе[/bold yellow]  "
+            f"[dim]Qwen3.5-27B сильная модель: RAG ценен точностью источников, а не числом слов[/dim]"
+        )
+    console.print(verdict_text)
+    console.print()
+    console.print()
+    console.print(Panel(
+        "[bold]Архитектура полностью локального RAG:[/bold]\n\n"
+        f"  Вопрос → [cyan]all-MiniLM-L6-v2[/cyan] (embedder, локально)\n"
+        f"          → [cyan]FAISS IndexFlatIP[/cyan] (data/index/{strategy})\n"
+        f"          → top-{top_k} чанков → промпт\n"
+        f"          → [magenta]llama-server :8081[/magenta] (Qwen3.5-27B, локально)\n"
+        f"          → Ответ\n\n"
+        "[dim]OpenRouter не используется. Всё работает офлайн.[/dim]",
+        border_style="magenta",
+        padding=(1, 3),
+    ))
+    console.print()

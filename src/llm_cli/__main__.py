@@ -181,6 +181,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0.3,
         help="Пауза между сообщениями в автодемо (секунды, default: 0.3)",
     )
+    parser.add_argument(
+        "--rag-local-demo",
+        action="store_true",
+        help="Полностью локальный RAG: FAISS + MiniLM (retrieval) + llama.cpp :8081 (генерация). OpenRouter не нужен.",
+    )
+    parser.add_argument(
+        "--rag-local-url",
+        type=str,
+        default="http://127.0.0.1:8081/v1/chat/completions",
+        help="URL локального llama-server (default: http://127.0.0.1:8081/v1/chat/completions)",
+    )
+    parser.add_argument(
+        "--rag-local-model",
+        type=str,
+        default="local",
+        help="Идентификатор модели для локального сервера (default: local)",
+    )
     return parser
 
 
@@ -333,6 +350,17 @@ def main() -> None:
                 rewrite_enabled=rewrite_enabled,
             )
             return
+
+    if args.rag_local_demo:
+        from .rag.rag_demo import run_local_rag_demo
+        run_local_rag_demo(
+            base_url=args.rag_local_url,
+            model_id=args.rag_local_model,
+            strategy=args.rag_eval_strategy,
+            top_k=args.rag_top_k,
+            question_limit=args.rag_question_limit,
+        )
+        return
 
     if args.rag_memory_chat or args.rag_memory_demo:
         from .rag.memory_demo import run_memory_chat, run_memory_demo

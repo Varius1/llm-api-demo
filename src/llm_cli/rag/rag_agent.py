@@ -10,6 +10,7 @@ from .chunker import Chunk
 from .embedder import Embedder
 from .indexer import FaissIndex
 from .relevance import PostRetrievalMode, PostRetrievalStats, apply_post_retrieval
+from ..models import OPENROUTER_URL
 
 if TYPE_CHECKING:
     from ..agent import Agent
@@ -121,9 +122,11 @@ class RagAgent:
         post_retrieval_mode: PostRetrievalMode = "off",
         rewrite_enabled: bool = True,
         temperature: float | None = 0.3,
+        base_url: str | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
+        self._base_url = base_url or OPENROUTER_URL
         self._index_dir = (index_dir or _INDEX_DIR) / strategy
         resolved_top_k_before = top_k_before if top_k_before is not None else top_k
         resolved_top_k_after = top_k_after if top_k_after is not None else resolved_top_k_before
@@ -316,7 +319,7 @@ class RagAgent:
 
         system_prompt = _RAG_SYSTEM_PROMPT if use_rag else _NO_RAG_SYSTEM_PROMPT
 
-        with OpenRouterClient(self._api_key) as client:
+        with OpenRouterClient(self._api_key, base_url=self._base_url) as client:
             agent = Agent(
                 client=client,
                 model=self._model,
