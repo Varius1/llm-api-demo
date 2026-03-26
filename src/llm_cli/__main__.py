@@ -198,12 +198,37 @@ def _build_parser() -> argparse.ArgumentParser:
         default="local",
         help="Идентификатор модели для локального сервера (default: local)",
     )
+    parser.add_argument(
+        "--local-optimize",
+        action="store_true",
+        help=(
+            "Демо оптимизации локальной LLM: сравнение temperature/max_tokens и prompt-шаблонов "
+            "(требует запущенного llama-server на --local-url)"
+        ),
+    )
+    parser.add_argument(
+        "--local-url",
+        type=str,
+        default="http://127.0.0.1:8081/v1/chat/completions",
+        help="URL локального llama-server для --local-optimize (default: http://127.0.0.1:8081/v1/chat/completions)",
+    )
+    parser.add_argument(
+        "--local-model-id",
+        type=str,
+        default="local",
+        help="Идентификатор модели для --local-optimize (default: local)",
+    )
     return parser
 
 
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.local_optimize:
+        from .local_optimize import run_local_optimize_demo
+        run_local_optimize_demo(base_url=args.local_url, model_id=args.local_model_id)
+        return
 
     if args.mcp:
         from .mcp_client import run_mcp_demo

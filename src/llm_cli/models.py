@@ -52,6 +52,7 @@ class ChatRequest(BaseModel):
     model: str
     messages: list[ChatMessage]
     temperature: float | None = None
+    max_tokens: int | None = None
     transforms: list[str] | None = None
     tools: list[ToolDefinition] | None = None
     tool_choice: str | None = None

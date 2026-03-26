@@ -63,6 +63,7 @@ class OpenRouterClient:
         temperature: float | None = None,
         transforms: list[str] | None = None,
         tools: list[ToolDefinition] | None = None,
+        max_tokens: int | None = None,
     ) -> ChatResponse:
         if self.is_local:
             messages = _merge_system_messages(messages)
@@ -71,6 +72,7 @@ class OpenRouterClient:
             model=model,
             messages=messages,
             temperature=temperature,
+            max_tokens=max_tokens,
             transforms=transforms,
             tools=tools,
         )
@@ -111,8 +113,9 @@ class OpenRouterClient:
         temperature: float | None = None,
         transforms: list[str] | None = None,
         tools: list[ToolDefinition] | None = None,
+        max_tokens: int | None = None,
     ) -> str:
-        content, _ = self.send_with_usage(messages, model, temperature, transforms, tools=tools)
+        content, _ = self.send_with_usage(messages, model, temperature, transforms, tools=tools, max_tokens=max_tokens)
         return content
 
     def send_with_usage(
@@ -122,8 +125,9 @@ class OpenRouterClient:
         temperature: float | None = None,
         transforms: list[str] | None = None,
         tools: list[ToolDefinition] | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[str, TokenUsage | None]:
-        chat_response = self.send_raw(messages, model, temperature, transforms, tools=tools)
+        chat_response = self.send_raw(messages, model, temperature, transforms, tools=tools, max_tokens=max_tokens)
 
         if chat_response.error is not None:
             raise RuntimeError(f"API ошибка: {chat_response.error.message}")
