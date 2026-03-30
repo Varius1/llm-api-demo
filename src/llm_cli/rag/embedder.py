@@ -12,7 +12,12 @@ _FALLBACK_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 class Embedder:
     """Wrapper around SentenceTransformer for batched embedding generation."""
 
-    def __init__(self, model_path: str | Path | None = None, batch_size: int = 64):
+    def __init__(
+        self,
+        model_path: str | Path | None = None,
+        batch_size: int = 64,
+        silent: bool = False,
+    ):
         from sentence_transformers import SentenceTransformer
 
         resolved = Path(model_path) if model_path else _DEFAULT_MODEL_PATH
@@ -22,7 +27,11 @@ class Embedder:
         else:
             model_source = _FALLBACK_MODEL_NAME
 
-        self.model = SentenceTransformer(model_source)
+        if silent:
+            import logging
+            logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+
+        self.model = SentenceTransformer(model_source, local_files_only=resolved.exists())
         self.batch_size = batch_size
         self.dim: int = self.model.get_sentence_embedding_dimension()  # type: ignore[assignment]
 

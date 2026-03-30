@@ -311,5 +311,50 @@ def save_to_file(content: str, filename: str) -> str:
         return f"Ошибка сохранения файла '{safe_name}': {e}"
 
 
+@mcp.tool()
+def get_git_info() -> str:
+    """Возвращает информацию о текущем состоянии git-репозитория: ветка, последний коммит, статус."""
+    import subprocess
+
+    results: dict[str, str] = {}
+
+    try:
+        branch = subprocess.check_output(
+            ["git", "branch", "--show-current"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        results["branch"] = branch or "(detached HEAD)"
+    except subprocess.CalledProcessError:
+        results["branch"] = "неизвестно (не git-репозиторий?)"
+
+    try:
+        last_commit = subprocess.check_output(
+            ["git", "log", "-1", "--oneline"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        results["last_commit"] = last_commit or "нет коммитов"
+    except subprocess.CalledProcessError:
+        results["last_commit"] = "нет коммитов"
+
+    try:
+        status_out = subprocess.check_output(
+            ["git", "status", "--short"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        changed_files = len(status_out.splitlines()) if status_out else 0
+        results["changed_files"] = str(changed_files)
+    except subprocess.CalledProcessError:
+        results["changed_files"] = "0"
+
+    return (
+        f"Ветка:           {results['branch']}\n"
+        f"Последний коммит: {results['last_commit']}\n"
+        f"Изменённых файлов: {results['changed_files']}"
+    )
+
+
 if __name__ == "__main__":
     mcp.run()

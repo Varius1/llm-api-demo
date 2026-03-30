@@ -12,11 +12,13 @@ from .agent import Agent
 from .api import OpenRouterClient
 from .benchmark import run_benchmark
 from .config import AppConfig
+from .dev_assistant import DevAssistant
 from .display import (
     print_branch_list,
     print_chat_turn_stats,
     print_error,
     print_fsm_transition_error,
+    print_help_commands,
     print_invariants,
     print_llm_response,
     print_memory_state,
@@ -109,7 +111,12 @@ def run_chat_with_tools(client: OpenRouterClient, cfg: AppConfig) -> None:
     asyncio.run(_main())
 
 
-def _run_chat_loop(agent: Agent, client: OpenRouterClient, cfg: AppConfig) -> None:
+def _run_chat_loop(
+    agent: Agent,
+    client: OpenRouterClient,
+    cfg: AppConfig,
+    dev_assistant: DevAssistant | None = None,
+) -> None:
     """Основной цикл чата — используется как из run_chat, так и из run_chat_with_tools."""
     benchmark_prompt = cfg.benchmark_prompt or BENCHMARK_PROMPT
 
@@ -138,6 +145,10 @@ def _run_chat_loop(agent: Agent, client: OpenRouterClient, cfg: AppConfig) -> No
         if text.lower() in ("exit", "quit"):
             console.print("[dim]До свидания![/dim]")
             break
+
+        if text.startswith("/help"):
+            _handle_help(text, dev_assistant, client, cfg)
+            continue
 
         if text.startswith("/temp"):
             _handle_temp(text, agent)
@@ -278,7 +289,11 @@ def run_chat(client: OpenRouterClient, cfg: AppConfig) -> None:
         model=cfg.default_model,
         temperature=cfg.temperature,
     )
-    _run_chat_loop(agent, client, cfg)
+    dev_assistant = DevAssistant(client, cfg, model=agent.model)
+    try:
+        _run_chat_loop(agent, client, cfg, dev_assistant=dev_assistant)
+    finally:
+        dev_assistant.close()
 
 
 async def _run_chat_loop_async(agent: Agent, client: OpenRouterClient, cfg: AppConfig) -> None:
@@ -376,6 +391,36 @@ def _read_multiline_input() -> str | None:
             lines.append(line)
 
     return "\n".join(lines).strip() or None
+
+
+def _handle_help(
+    text: str,
+    dev_assistant: DevAssistant | None,
+    client: OpenRouterClient,
+    cfg: AppConfig,
+) -> None:
+    question = text.removeprefix("/help").strip()
+
+    if not question:
+        print_help_commands()
+        return
+
+    if dev_assistant is None:
+        dev_assistant = DevAssistant(client, cfg)
+
+    console.print(
+        Panel(
+            f"[bold cyan]Вопрос:[/bold cyan] {question}",
+            title="[bold green]Developer Assistant[/bold green]",
+            border_style="green",
+        )
+    )
+    try:
+        with console.status("[bold cyan]Анализирую документацию...[/bold cyan]", spinner="dots"):
+            answer = dev_assistant.ask(question)
+        print_llm_response(answer)
+    except Exception as e:
+        print_error(f"Dev Assistant: {e}")
 
 
 def _handle_temp(text: str, agent: Agent) -> None:

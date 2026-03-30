@@ -29,48 +29,52 @@ def print_welcome(model: str, temperature: float | None) -> None:
             "[bold]LLM CLI Chat[/bold]\n"
             f"Модель: [cyan]{model}[/cyan]\n"
             f"Температура: [cyan]{temperature if temperature is not None else 'по умолчанию (0.2)'}[/cyan]\n\n"
-            "Команды:\n"
+            "  [yellow]/help[/yellow] [dim]<вопрос>[/dim] — ассистент разработчика + список команд\n"
+            "  [yellow]exit[/yellow] — выход  |  двойной Enter — отправить сообщение",
+            title="[bold cyan]LLM CLI[/bold cyan]",
+            border_style="cyan",
+        )
+    )
+    console.print()
+
+
+def print_help_commands() -> None:
+    """Полный справочник команд — вызывается через /help."""
+    console.print()
+    console.print(
+        Panel(
+            "  [bold cyan]Контекст и стратегии:[/bold cyan]\n"
             "  [yellow]/strategy sliding|facts|summary|branch[/yellow] — стратегия контекста\n"
             "  [yellow]/branch save [имя][/yellow] / [yellow]/branch switch <имя>[/yellow] / [yellow]/branch list[/yellow] — ветки\n"
             "  [yellow]/facts[/yellow] — показать KV-память (стратегия facts)\n"
-            "  [yellow]/compress on|off[/yellow] — включить/выключить summary-сжатие\n"
+            "  [yellow]/compress on|off[/yellow] — включить/выключить summary-сжатие\n\n"
             "  [bold cyan]Профиль и персонализация:[/bold cyan]\n"
             "  [yellow]/profile[/yellow] — показать активный профиль\n"
-            "  [yellow]/profile new <имя>[/yellow] — создать профиль  |  [yellow]/profile switch <имя>[/yellow] — переключить\n"
-            "  [yellow]/profile set <поле> <значение>[/yellow] — изменить поле  |  [yellow]/profile list[/yellow] — все профили\n"
-            "  [yellow]/profile delete <имя>[/yellow] — удалить  |  [yellow]/profile reset[/yellow] — отключить профиль\n"
-            "  [bold cyan]Task FSM (конечный автомат задачи):[/bold cyan]\n"
-            "  [yellow]/task fsm start <имя>[/yellow] — запустить задачу (planning → execution → validation → done)\n"
-            "  [yellow]/task fsm next [заметка][/yellow] — перейти к следующему этапу\n"
-            "  [yellow]/task fsm pause[/yellow] — пауза (LLM отвечает свободно)  |  [yellow]/task fsm resume[/yellow] — возобновить\n"
-            "  [yellow]/task fsm goto <этап>[/yellow] — попытка перехода (всегда заблокирована — показывает причину)\n"
-            "  [yellow]/task fsm step <шаг>[/yellow] — текущий шаг  |  [yellow]/task fsm artifact <ключ> <текст>[/yellow] — артефакт\n"
-            "  [yellow]/task fsm status[/yellow] — состояние FSM  |  [yellow]/task fsm clear[/yellow] — сброс\n"
-            "  [yellow]/demo-fsm-lifecycle[/yellow] — [bold]для видео[/bold]: полный цикл с LLM + блокировки + пауза/resume (~5 запросов)\n"
-            "  [yellow]/demo-fsm-guards[/yellow] — демо защиты переходов без API (чистая FSM-логика)\n"
-            "  [yellow]/demo-fsm[/yellow] — расширенное демо: все этапы + сравнительная таблица ответов\n"
+            "  [yellow]/profile new <имя>[/yellow] — создать  |  [yellow]/profile switch <имя>[/yellow] — переключить\n"
+            "  [yellow]/profile set <поле> <значение>[/yellow] — изменить  |  [yellow]/profile list[/yellow] — все профили\n"
+            "  [yellow]/profile delete <имя>[/yellow] — удалить  |  [yellow]/profile reset[/yellow] — отключить\n\n"
             "  [bold cyan]Модель памяти:[/bold cyan]\n"
             "  [yellow]/memory[/yellow] — показать все 3 слоя памяти\n"
-            "  [yellow]/task <описание>[/yellow] — задать задачу в рабочей памяти  |  [yellow]/task clear[/yellow] — очистить\n"
-            "  [yellow]/remember <текст>[/yellow] — заметка в долговременную память\n"
-            "  [yellow]/remember <ключ>=<значение>[/yellow] — знание  |  [yellow]/remember profile <ключ>=<значение>[/yellow]\n"
-            "  [yellow]/forget <ключ>[/yellow] — удалить из долговременной памяти\n"
-            "  [yellow]/demo-persona[/yellow] — демо профилей: developer vs student, сравнение ответов\n"
-            "  [yellow]/demo-memory[/yellow] — демо 3 слоёв памяти: хранение, влияние на ответы\n"
-            "  [yellow]/demo-strategies[/yellow] — сравнение 3 стратегий\n"
-            "  [yellow]/demo-branch[/yellow] — демо веток: общий старт → 2 ветки → сравнение\n"
-            "  [yellow]/demo-compare[/yellow] — сравнение off/on summary\n"
-            "  [bold cyan]Инварианты (неизменяемые правила проекта):[/bold cyan]\n"
-            "  [yellow]/invariants[/yellow] — показать все инварианты\n"
-            "  [yellow]/invariant-add <кат> <название> | <описание>[/yellow] — добавить  |  [yellow]/invariant-del <ID>[/yellow] — удалить\n"
-            "  [yellow]/invariant-clear[/yellow] — очистить все  |  кат: [yellow]arch[/yellow] / [yellow]tech[/yellow] / [yellow]stack[/yellow] / [yellow]biz[/yellow]\n"
-            "  [yellow]/demo-invariants[/yellow] — демо: инварианты + тест конфликта\n"
-            "  [yellow]/model local[/yellow] — переключить на локальную LLM (llama.cpp)  |  [yellow]/model openrouter[/yellow] — переключить на OpenRouter\n"
-            "  [yellow]/model <provider/model-id>[/yellow] — задать конкретную OpenRouter-модель\n"
-            "  [yellow]/temp 0.7[/yellow] — температура\n"
-            "  [yellow]/overflow 9000[/yellow] — тест переполнения, [yellow]/clear[/yellow] — очистить историю\n"
+            "  [yellow]/task <описание>[/yellow] — задача в рабочей памяти  |  [yellow]/task clear[/yellow] — очистить\n"
+            "  [yellow]/remember <текст>[/yellow] — заметка  |  [yellow]/remember <ключ>=<значение>[/yellow] — знание\n"
+            "  [yellow]/forget <ключ>[/yellow] — удалить из долговременной памяти\n\n"
+            "  [bold cyan]Task FSM:[/bold cyan]\n"
+            "  [yellow]/task fsm start <имя>[/yellow] — запустить (planning → execution → validation → done)\n"
+            "  [yellow]/task fsm next[/yellow] — следующий этап  |  [yellow]/task fsm status[/yellow] — состояние\n"
+            "  [yellow]/task fsm pause[/yellow] / [yellow]resume[/yellow] — пауза/возобновление  |  [yellow]/task fsm clear[/yellow] — сброс\n\n"
+            "  [bold cyan]Инварианты:[/bold cyan]\n"
+            "  [yellow]/invariants[/yellow] — показать  |  [yellow]/invariant-add <кат> <название> | <описание>[/yellow]\n"
+            "  [yellow]/invariant-del <ID>[/yellow]  |  [yellow]/invariant-clear[/yellow]  |  кат: arch / tech / stack / biz\n\n"
+            "  [bold cyan]Модель и настройки:[/bold cyan]\n"
+            "  [yellow]/model local[/yellow] — локальная LLM  |  [yellow]/model openrouter[/yellow] — OpenRouter\n"
+            "  [yellow]/model <provider/model-id>[/yellow] — конкретная модель  |  [yellow]/temp 0.7[/yellow] — температура\n"
+            "  [yellow]/clear[/yellow] — очистить историю  |  [yellow]/overflow 9000[/yellow] — тест переполнения\n\n"
+            "  [bold cyan]Демо:[/bold cyan]\n"
+            "  [yellow]/demo-fsm-lifecycle[/yellow]  [yellow]/demo-fsm-guards[/yellow]  [yellow]/demo-fsm[/yellow]\n"
+            "  [yellow]/demo-persona[/yellow]  [yellow]/demo-memory[/yellow]  [yellow]/demo-strategies[/yellow]\n"
+            "  [yellow]/demo-branch[/yellow]  [yellow]/demo-compare[/yellow]  [yellow]/demo-invariants[/yellow]\n\n"
             "  [yellow]exit[/yellow] — выход  |  двойной Enter — отправить сообщение",
-            title="[bold cyan]LLM CLI[/bold cyan]",
+            title="[bold cyan]Справочник команд[/bold cyan]",
             border_style="cyan",
         )
     )

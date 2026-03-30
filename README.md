@@ -634,6 +634,7 @@ llm-cli --tools
 | `calculate` | Вычислить математическое выражение | `expression: string` |
 | `list_models` | Список LLM-моделей из конфига | — |
 | `get_crypto_price` | Текущая цена криптовалюты в USD (CoinGecko API) | `symbol: string` (BTC, ETH, SOL, BNB, XRP, ADA, DOGE, TON) |
+| `get_git_info` | Текущая git-ветка, последний коммит и изменённые файлы | — |
 
 ### Файлы
 
@@ -642,6 +643,32 @@ llm-cli --tools
 | `mcp_server.py` | MCP-сервер с инструментами (FastMCP, stdio) |
 | `mcp_client.py` | MCP-клиент: соединение, `list_tools`, `call_tool` |
 | `agent.py` | Tool call loop: получает tool_calls от LLM, вызывает MCP, повторяет запрос |
+
+## Developer Assistant — команда /help
+
+Ассистент разработчика, встроенный в чат и понимающий структуру проекта.
+
+### Использование
+
+```bash
+# В обычном чате:
+/help                          # справочник всех команд
+/help Как устроена RAG-система?
+/help Какие MCP-инструменты есть в проекте?
+/help На какой я сейчас ветке?
+```
+
+### Как работает
+
+- **RAG** — при первом вызове автоматически индексирует `README.md` и папку `docs/` (FAISS + all-MiniLM-L6-v2). Индекс кэшируется в `data/index/project/`.
+- **Git-контекст** — получает текущую ветку, последний коммит и список изменённых файлов через `subprocess git`.
+- **LLM** — формирует ответ на основе найденных фрагментов документации и git-данных.
+
+### Демо для записи видео
+
+```bash
+bash demo_help.sh
+```
 
 ## Архитектура
 
@@ -920,7 +947,8 @@ src/llm_cli/
   config.py         — загрузка/сохранение TOML-конфига
   display.py        — Rich-отрисовка (таблицы, панели, спиннеры)
   mcp_client.py     — MCP-клиент: соединение, list_tools, call_tool (MCPSession)
-  mcp_server.py     — MCP-сервер: get_weather, calculate, list_models, get_crypto_price (FastMCP, stdio)
+  mcp_server.py     — MCP-сервер: get_weather, calculate, list_models, get_crypto_price, get_git_info (FastMCP, stdio)
+  dev_assistant.py  — Developer Assistant: RAG + git-контекст → ответы на вопросы о проекте (/help)
   memory.py         — 3-слойная модель памяти (WorkingMemory, LongTermMemory, MemoryManager)
   models.py         — Pydantic-модели данных (включая ToolCall, ToolDefinition)
   strategy.py       — стратегии управления контекстом (Sliding Window, Sticky Facts)
@@ -936,4 +964,5 @@ src/llm_cli/
     relevance.py    — post-retrieval: threshold / rerank
     eval.py         — 10 контрольных вопросов, сравнительные таблицы
     pipeline.py     — run_pipeline() (индексация обеих стратегий)
+    project_index.py — ProjectRagIndex (RAG по README + docs/ для Developer Assistant)
 ```
