@@ -966,3 +966,116 @@ src/llm_cli/
     pipeline.py     — run_pipeline() (индексация обеих стратегий)
     project_index.py — ProjectRagIndex (RAG по README + docs/ для Developer Assistant)
 ```
+
+---
+
+## AI Code Review
+
+Автоматическое AI-ревью кода при открытии Pull Request в GitHub.
+
+### Как работает
+
+1. **GitHub Actions** запускает workflow при открытии или обновлении PR
+2. Скрипт получает `diff` и список изменённых файлов через **GitHub API**
+3. Выполняется **RAG-поиск** по FAISS-индексу документации проекта (`data/index/`)
+4. **LLM** (через OpenRouter) анализирует diff с учётом документации
+5. Ревью публикуется как **комментарий к PR**
+
+### Структура ревью
+
+```
+## Потенциальные баги
+Конкретные ошибки, граничные случаи, проблемы с обработкой ошибок.
+
+## Архитектурные проблемы
+Нарушения SOLID, связность, дублирование, именование.
+
+## Рекомендации
+Тесты, рефакторинг, документация, альтернативные подходы.
+```
+
+### Настройка (GitHub Actions)
+
+Добавьте секрет `OPENROUTER_API_KEY` в настройках репозитория:
+**Settings → Secrets and variables → Actions → New repository secret**
+
+Workflow автоматически запустится при следующем открытии/обновлении PR.
+Файл: `.github/workflows/pr_review.yml`
+
+### Демо (локальный запуск без PR)
+
+```bash
+# Вариант 1: через OpenRouter
+export OPENROUTER_API_KEY=sk-or-...
+bash scripts/demo_pr_review.sh
+
+# Вариант 2: через локальный llama.cpp (ключ не нужен)
+USE_LOCAL=1 bash scripts/demo_pr_review.sh
+```
+
+Демо-скрипт не обращается к GitHub API — он симулирует PR из локального файла
+`buggy_calc.py`, содержащего намеренно упрощённый код для демонстрации ревью.
+
+### Локальный llama.cpp (без OpenRouter)
+
+Запустите llama-server перед использованием скрипта:
+
+```bash
+cd ~/llama.cpp
+./build/bin/llama-server \
+  -m "/path/to/model.gguf" \
+  --host 127.0.0.1 --port 8081 \
+  --ctx-size 248000 --n-gpu-layers 555
+```
+
+Затем запускайте ревью с `USE_LOCAL=1`:
+
+```bash
+# Демо с локальной моделью
+USE_LOCAL=1 bash scripts/demo_pr_review.sh
+
+# Ручной запуск
+SIMULATE=1 USE_LOCAL=1 python scripts/pr_review.py
+
+# Другой порт / адрес
+SIMULATE=1 USE_LOCAL=1 LOCAL_URL=http://127.0.0.1:8081/v1/chat/completions python scripts/pr_review.py
+```
+
+### Ручной запуск скрипта
+
+```bash
+# Симуляция с OpenRouter
+SIMULATE=1 SIMULATE_FILE=buggy_calc.py python scripts/pr_review.py
+
+# Симуляция с локальной моделью (без ключа API)
+SIMULATE=1 USE_LOCAL=1 python scripts/pr_review.py
+
+# Симуляция с отключённым RAG
+SIMULATE=1 USE_LOCAL=1 USE_RAG=0 python scripts/pr_review.py
+
+# Реальный PR через OpenRouter
+GITHUB_TOKEN=ghp_... \
+GITHUB_REPOSITORY=owner/repo \
+PR_NUMBER=42 \
+python scripts/pr_review.py
+
+# Реальный PR через локальную модель
+USE_LOCAL=1 \
+GITHUB_TOKEN=ghp_... \
+GITHUB_REPOSITORY=owner/repo \
+PR_NUMBER=42 \
+python scripts/pr_review.py
+```
+
+| Переменная | Описание |
+|---|---|
+| `OPENROUTER_API_KEY` | Ключ OpenRouter (не нужен при `USE_LOCAL=1`) |
+| `USE_LOCAL` | `1` — использовать локальный llama.cpp вместо OpenRouter |
+| `LOCAL_URL` | URL локального сервера (по умолчанию `http://127.0.0.1:8081/v1/chat/completions`) |
+| `GITHUB_TOKEN` | Токен GitHub для публикации комментария |
+| `GITHUB_REPOSITORY` | Репозиторий в формате `owner/repo` |
+| `PR_NUMBER` | Номер PR |
+| `SIMULATE` | `1` — читать локальный файл вместо GitHub API |
+| `SIMULATE_FILE` | Путь к файлу для симуляции (по умолчанию `buggy_calc.py`) |
+| `REVIEW_MODEL` | ID модели (по умолчанию `google/gemma-2-9b-it` или `local`) |
+| `USE_RAG` | `0` — отключить RAG-поиск (по умолчанию `1`) |
