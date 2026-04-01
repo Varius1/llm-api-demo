@@ -1,0 +1,135 @@
+[
+  {
+    "id": "TKT-001",
+    "user_id": "usr_001",
+    "type": "auth_error",
+    "status": "in_progress",
+    "priority": "high",
+    "subject": "Не могу войти в аккаунт — ошибка авторизации",
+    "description": "При попытке войти через email/пароль получаю ошибку 'Invalid credentials'. Пароль точно верный, сбрасывал уже два раза. После сброса первый вход работает, но через 10 минут снова блокирует.",
+    "created_at": "2026-03-30T09:15:00",
+    "updated_at": "2026-04-01T13:50:12",
+    "tags": [
+      "login",
+      "password",
+      "blocked"
+    ]
+  },
+  {
+    "id": "TKT-002",
+    "user_id": "usr_002",
+    "type": "billing",
+    "status": "open",
+    "priority": "medium",
+    "subject": "Не получается перейти на план Pro",
+    "description": "Нажимаю 'Upgrade to Pro', вводю данные карты, но после подтверждения страница просто перезагружается и тариф остаётся Free. Деньги с карты не списывались.",
+    "created_at": "2026-03-29T14:30:00",
+    "updated_at": "2026-03-29T14:30:00",
+    "tags": [
+      "payment",
+      "upgrade",
+      "billing"
+    ]
+  },
+  {
+    "id": "TKT-003",
+    "user_id": "usr_003",
+    "type": "billing",
+    "status": "in_progress",
+    "priority": "high",
+    "subject": "Двойное списание за Enterprise план",
+    "description": "В марте 2026 с корпоративной карты было два списания по 29 000 руб. Нужен возврат лишней суммы и исправленный счёт для бухгалтерии.",
+    "created_at": "2026-03-28T10:00:00",
+    "updated_at": "2026-03-31T08:45:00",
+    "tags": [
+      "double-charge",
+      "refund",
+      "enterprise",
+      "invoice"
+    ]
+  },
+  {
+    "id": "TKT-004",
+    "user_id": "usr_004",
+    "type": "feature_request",
+    "status": "open",
+    "priority": "low",
+    "subject": "Добавить экспорт данных в Excel",
+    "description": "Нам нужно выгружать отчёты по API-запросам в формате .xlsx для передачи руководству. Сейчас есть только CSV.",
+    "created_at": "2026-03-27T16:20:00",
+    "updated_at": "2026-03-27T16:20:00",
+    "tags": [
+      "export",
+      "excel",
+      "reports"
+    ]
+  },
+  {
+    "id": "TKT-005",
+    "user_id": "usr_001",
+    "type": "api_error",
+    "status": "open",
+    "priority": "high",
+    "subject": "API возвращает 401 при валидном токене",
+    "description": "После ротации API-ключей в настройках старый ключ перестал работать — это ожидаемо. Но новый сгенерированный ключ тоже возвращает HTTP 401 при запросах к /api/v2/data. Ключ скопирован сразу после генерации.",
+    "created_at": "2026-03-31T07:30:00",
+    "updated_at": "2026-03-31T07:30:00",
+    "tags": [
+      "api",
+      "401",
+      "token",
+      "authentication"
+    ]
+  },
+  {
+    "id": "TKT-006",
+    "user_id": "usr_005",
+    "type": "bug",
+    "status": "resolved",
+    "priority": "medium",
+    "subject": "Дашборд не загружается на Firefox",
+    "description": "При открытии дашборда в Firefox 124 страница зависает на этапе загрузки графиков. В Chrome всё работает нормально.",
+    "created_at": "2026-03-25T13:00:00",
+    "updated_at": "2026-03-26T17:30:00",
+    "resolution": "Исправлено в версии 2.4.1: устранена несовместимость с Firefox WebGL.",
+    "tags": [
+      "firefox",
+      "dashboard",
+      "ui-bug"
+    ]
+  },
+  {
+    "id": "TKT-007",
+    "user_id": "usr_002",
+    "type": "auth_error",
+    "status": "open",
+    "priority": "medium",
+    "subject": "Двухфакторная аутентификация — коды не приходят",
+    "description": "Включила 2FA через SMS. При входе система запрашивает код, но SMS не приходит уже 20+ минут. Пробовала несколько раз — без результата. Другие SMS от операторов доходят нормально.",
+    "created_at": "2026-03-30T18:45:00",
+    "updated_at": "2026-03-30T18:45:00",
+    "tags": [
+      "2fa",
+      "sms",
+      "login",
+      "authentication"
+    ]
+  },
+  {
+    "id": "TKT-008",
+    "user_id": "usr_003",
+    "type": "api_error",
+    "status": "in_progress",
+    "priority": "high",
+    "subject": "Rate limit 429 при корпоративном плане",
+    "description": "Enterprise план предполагает 10 000 req/min, но мы получаем 429 уже при ~2 000 req/min. Интеграция с нашим production-пайплайном блокируется. Нужна срочная помощь.",
+    "created_at": "2026-03-31T06:00:00",
+    "updated_at": "2026-03-31T09:00:00",
+    "tags": [
+      "rate-limit",
+      "429",
+      "enterprise",
+      "api"
+    ]
+  }
+]

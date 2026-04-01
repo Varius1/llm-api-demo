@@ -1,0 +1,52 @@
+[
+  {
+    "id": "usr_001",
+    "name": "Алексей Петров",
+    "email": "a.petrov@example.com",
+    "plan": "pro",
+    "registered_at": "2024-03-15",
+    "company": "ООО Технологии",
+    "phone": "+7 (495) 123-45-67",
+    "timezone": "Europe/Moscow"
+  },
+  {
+    "id": "usr_002",
+    "name": "Мария Иванова",
+    "email": "m.ivanova@example.com",
+    "plan": "free",
+    "registered_at": "2024-11-02",
+    "company": null,
+    "phone": "+7 (812) 987-65-43",
+    "timezone": "Europe/Moscow"
+  },
+  {
+    "id": "usr_003",
+    "name": "Дмитрий Соколов",
+    "email": "d.sokolov@bigcorp.ru",
+    "plan": "enterprise",
+    "registered_at": "2023-07-20",
+    "company": "BigCorp Russia",
+    "phone": "+7 (495) 555-00-11",
+    "timezone": "Asia/Novosibirsk"
+  },
+  {
+    "id": "usr_004",
+    "name": "Елена Новикова",
+    "email": "e.novikova@startup.io",
+    "plan": "pro",
+    "registered_at": "2024-08-10",
+    "company": "Startup.io",
+    "phone": "+7 (903) 444-22-33",
+    "timezone": "Europe/Moscow"
+  },
+  {
+    "id": "usr_005",
+    "name": "Игорь Козлов",
+    "email": "i.kozlov@freelance.dev",
+    "plan": "free",
+    "registered_at": "2025-01-08",
+    "company": null,
+    "phone": "+7 (916) 777-88-99",
+    "timezone": "Europe/Samara"
+  }
+]

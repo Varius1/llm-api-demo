@@ -199,6 +199,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Идентификатор модели для локального сервера (default: local)",
     )
     parser.add_argument(
+        "--support-demo",
+        action="store_true",
+        help=(
+            "Демо ассистента поддержки пользователей: "
+            "RAG (FAQ) + CRM (тикеты из JSON) + LLM-ответы по реальным тикетам"
+        ),
+    )
+    parser.add_argument(
         "--local-optimize",
         action="store_true",
         help=(
@@ -409,6 +417,12 @@ def main() -> None:
                 top_k=top_k,
                 pause=args.rag_memory_pause,
             )
+        return
+
+    if args.support_demo:
+        from .support_assistant import run_support_demo
+        cfg = ensure_config()
+        run_support_demo(api_key=cfg.api_key, model=cfg.default_model)
         return
 
     cfg = ensure_config()
