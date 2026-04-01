@@ -49,8 +49,12 @@ class MCPSession:
             args=["-m", "llm_cli.mcp_server"],
         )
         self._exit_stack = AsyncExitStack()
-        read, write = await self._exit_stack.enter_async_context(stdio_client(server_params))
-        self._session = await self._exit_stack.enter_async_context(ClientSession(read, write))
+        read, write = await self._exit_stack.enter_async_context(
+            stdio_client(server_params)
+        )
+        self._session = await self._exit_stack.enter_async_context(
+            ClientSession(read, write)
+        )
         await self._session.initialize()
         await self._refresh_tools()
         return self
@@ -94,6 +98,13 @@ class MCPSession:
             return first.text
         return str(first)
 
+    def call_tool_sync(self, name: str, arguments: dict[str, Any]) -> str:
+        """Синхронная версия вызова инструмента (запускает asyncio.run)."""
+        assert self._loop is not None
+        result = asyncio.run_coroutine_threadsafe(
+            self.call_tool(name, arguments), self._loop
+        )
+        return result.result()
 
 
 _DEMO_CALLS: list[tuple[str, dict[str, str]]] = [
@@ -109,11 +120,13 @@ async def _run(python_executable: str) -> None:
         args=["-m", "llm_cli.mcp_server"],
     )
 
-    console.print(Panel(
-        "[bold cyan]Устанавливаю MCP-соединение...[/bold cyan]",
-        border_style="cyan",
-        expand=False,
-    ))
+    console.print(
+        Panel(
+            "[bold cyan]Устанавливаю MCP-соединение...[/bold cyan]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -157,7 +170,9 @@ async def _run(python_executable: str) -> None:
             console.print("[dim]* — обязательный параметр[/dim]\n")
 
             # ── Шаг 2: вызов инструментов ───────────────────────────────────
-            console.print(Rule("[bold magenta]Вызов инструментов[/bold magenta]", style="magenta"))
+            console.print(
+                Rule("[bold magenta]Вызов инструментов[/bold magenta]", style="magenta")
+            )
             console.print()
 
             for tool_name, arguments in _DEMO_CALLS:
@@ -172,7 +187,11 @@ async def _run(python_executable: str) -> None:
                 call_result = await session.call_tool(tool_name, arguments)
                 content = call_result.content
                 if content:
-                    raw = content[0].text if hasattr(content[0], "text") else str(content[0])
+                    raw = (
+                        content[0].text
+                        if hasattr(content[0], "text")
+                        else str(content[0])
+                    )
                 else:
                     raw = "(пустой ответ)"
 
@@ -201,12 +220,14 @@ async def _run_agent_demo(api_key: str) -> None:
     from .agent import Agent
     from .api import OpenRouterClient
 
-    console.print(Panel(
-        "[bold cyan]Запускаю агента с MCP-инструментами...[/bold cyan]\n"
-        "[dim]Агент автоматически вызовет инструменты и вернёт результат[/dim]",
-        border_style="cyan",
-        expand=False,
-    ))
+    console.print(
+        Panel(
+            "[bold cyan]Запускаю агента с MCP-инструментами...[/bold cyan]\n"
+            "[dim]Агент автоматически вызовет инструменты и вернёт результат[/dim]",
+            border_style="cyan",
+            expand=False,
+        )
+    )
     console.print()
 
     async with MCPSession() as mcp:
@@ -226,14 +247,20 @@ async def _run_agent_demo(api_key: str) -> None:
         console.print(table)
         console.print(f"[dim]Модель: {_AGENT_DEMO_MODEL}[/dim]\n")
 
-        console.print(Rule("[bold magenta]Промпт агенту[/bold magenta]", style="magenta"))
-        console.print(Panel(
-            _AGENT_DEMO_PROMPT,
-            border_style="dim",
-            expand=False,
-        ))
+        console.print(
+            Rule("[bold magenta]Промпт агенту[/bold magenta]", style="magenta")
+        )
+        console.print(
+            Panel(
+                _AGENT_DEMO_PROMPT,
+                border_style="dim",
+                expand=False,
+            )
+        )
         console.print()
-        console.print(Rule("[bold yellow]Tool Calling Loop[/bold yellow]", style="yellow"))
+        console.print(
+            Rule("[bold yellow]Tool Calling Loop[/bold yellow]", style="yellow")
+        )
         console.print()
 
         with OpenRouterClient(api_key) as client:
@@ -241,7 +268,9 @@ async def _run_agent_demo(api_key: str) -> None:
             reply = await agent.run_async(_AGENT_DEMO_PROMPT)
 
         console.print()
-        console.print(Rule("[bold green]Финальный ответ LLM[/bold green]", style="green"))
+        console.print(
+            Rule("[bold green]Финальный ответ LLM[/bold green]", style="green")
+        )
         console.print(Panel(reply, border_style="green", expand=False))
 
 
@@ -268,16 +297,18 @@ async def _run_pipeline_demo(api_key: str) -> None:
     from .agent import Agent
     from .api import OpenRouterClient
 
-    console.print(Panel(
-        "[bold cyan]MCP Pipeline Demo[/bold cyan]\n"
-        "[dim]search → summarize → save_to_file[/dim]\n\n"
-        "[white]Агент автоматически выполнит цепочку инструментов:[/white]\n"
-        "  [yellow]1.[/yellow] [bold]search[/bold]       — получить данные\n"
-        "  [yellow]2.[/yellow] [bold]summarize[/bold]    — обработать / сжать\n"
-        "  [yellow]3.[/yellow] [bold]save_to_file[/bold] — сохранить результат",
-        border_style="cyan",
-        expand=False,
-    ))
+    console.print(
+        Panel(
+            "[bold cyan]MCP Pipeline Demo[/bold cyan]\n"
+            "[dim]search → summarize → save_to_file[/dim]\n\n"
+            "[white]Агент автоматически выполнит цепочку инструментов:[/white]\n"
+            "  [yellow]1.[/yellow] [bold]search[/bold]       — получить данные\n"
+            "  [yellow]2.[/yellow] [bold]summarize[/bold]    — обработать / сжать\n"
+            "  [yellow]3.[/yellow] [bold]save_to_file[/bold] — сохранить результат",
+            border_style="cyan",
+            expand=False,
+        )
+    )
     console.print()
 
     async with MCPSession() as mcp:
@@ -302,16 +333,24 @@ async def _run_pipeline_demo(api_key: str) -> None:
             table.add_row(str(i), t.function.name, desc_short)
 
         console.print(table)
-        console.print(f"[dim]+ ещё {other_tools_count} инструментов зарегистрировано на сервере[/dim]\n")
+        console.print(
+            f"[dim]+ ещё {other_tools_count} инструментов зарегистрировано на сервере[/dim]\n"
+        )
 
-        console.print(Rule("[bold magenta]Промпт агенту[/bold magenta]", style="magenta"))
-        console.print(Panel(
-            _PIPELINE_DEMO_PROMPT,
-            border_style="dim",
-            expand=False,
-        ))
+        console.print(
+            Rule("[bold magenta]Промпт агенту[/bold magenta]", style="magenta")
+        )
+        console.print(
+            Panel(
+                _PIPELINE_DEMO_PROMPT,
+                border_style="dim",
+                expand=False,
+            )
+        )
         console.print()
-        console.print(Rule("[bold yellow]Tool Calling Pipeline[/bold yellow]", style="yellow"))
+        console.print(
+            Rule("[bold yellow]Tool Calling Pipeline[/bold yellow]", style="yellow")
+        )
         console.print()
 
         with OpenRouterClient(api_key) as client:
@@ -319,22 +358,31 @@ async def _run_pipeline_demo(api_key: str) -> None:
             reply = await agent.run_async(_PIPELINE_DEMO_PROMPT)
 
         console.print()
-        console.print(Rule("[bold green]Финальный ответ LLM[/bold green]", style="green"))
+        console.print(
+            Rule("[bold green]Финальный ответ LLM[/bold green]", style="green")
+        )
         console.print(Panel(reply, border_style="green", expand=False))
 
         import os
         from pathlib import Path
+
         result_file = Path(os.getcwd()) / "pipeline_result.txt"
         if result_file.exists():
             content = result_file.read_text(encoding="utf-8")
             console.print()
-            console.print(Rule("[bold blue]Содержимое сохранённого файла[/bold blue]", style="blue"))
-            console.print(Panel(
-                content,
-                title=f"[dim]{result_file}[/dim]",
-                border_style="blue",
-                expand=False,
-            ))
+            console.print(
+                Rule(
+                    "[bold blue]Содержимое сохранённого файла[/bold blue]", style="blue"
+                )
+            )
+            console.print(
+                Panel(
+                    content,
+                    title=f"[dim]{result_file}[/dim]",
+                    border_style="blue",
+                    expand=False,
+                )
+            )
 
 
 def run_pipeline_demo() -> None:
@@ -349,7 +397,8 @@ def run_pipeline_demo() -> None:
 # MultiMCPSession — оркестратор нескольких MCP-серверов
 # ─────────────────────────────────────────────────────────────────────────────
 
-class MultiMCPSession:
+
+class MultiMCPSession(MCPSession):
     """Оркестратор двух MCP-серверов с автоматической маршрутизацией вызовов.
 
     Сервер 1 — Data & Analytics (data-analytics):
@@ -437,7 +486,8 @@ class MultiMCPSession:
                     function=ToolDefinitionFunction(
                         name=tool.name,
                         description=f"[Data] {tool.description or ''}",
-                        parameters=tool.inputSchema or {"type": "object", "properties": {}},
+                        parameters=tool.inputSchema
+                        or {"type": "object", "properties": {}},
                     )
                 )
             )
@@ -451,7 +501,8 @@ class MultiMCPSession:
                     function=ToolDefinitionFunction(
                         name=tool.name,
                         description=f"[Tools] {tool.description or ''}",
-                        parameters=tool.inputSchema or {"type": "object", "properties": {}},
+                        parameters=tool.inputSchema
+                        or {"type": "object", "properties": {}},
                     )
                 )
             )
@@ -490,7 +541,9 @@ class MultiMCPSession:
 
         if self._loop is not None and self._loop.is_running():
             # Планируем корутину в существующем loop из другого треда
-            fut = asyncio.run_coroutine_threadsafe(self.call_tool(name, arguments), self._loop)
+            fut = asyncio.run_coroutine_threadsafe(
+                self.call_tool(name, arguments), self._loop
+            )
             return fut.result(timeout=60)
         return asyncio.run(self.call_tool(name, arguments))
 
@@ -531,17 +584,19 @@ async def _run_orchestration_demo(api_key: str) -> None:
 
     # ── Шапка ───────────────────────────────────────────────────────────────
     console.print()
-    console.print(Panel(
-        "[bold cyan]MCP Orchestration Demo[/bold cyan]\n"
-        "[dim]Два MCP-сервера · Автоматическая маршрутизация · Длинный флоу[/dim]\n\n"
-        "[white]Регистрируем два специализированных MCP-сервера:[/white]\n"
-        "  [bold yellow]①[/bold yellow] [bold green]Data & Analytics[/bold green]  "
-        "— search, get_crypto_price, get_weather, calculate, summarize\n"
-        "  [bold yellow]②[/bold yellow] [bold blue]Tools & Storage[/bold blue]    "
-        "— save_to_file, list_models, add_reminder, get_pending_reminders, …",
-        border_style="cyan",
-        expand=False,
-    ))
+    console.print(
+        Panel(
+            "[bold cyan]MCP Orchestration Demo[/bold cyan]\n"
+            "[dim]Два MCP-сервера · Автоматическая маршрутизация · Длинный флоу[/dim]\n\n"
+            "[white]Регистрируем два специализированных MCP-сервера:[/white]\n"
+            "  [bold yellow]①[/bold yellow] [bold green]Data & Analytics[/bold green]  "
+            "— search, get_crypto_price, get_weather, calculate, summarize\n"
+            "  [bold yellow]②[/bold yellow] [bold blue]Tools & Storage[/bold blue]    "
+            "— save_to_file, list_models, add_reminder, get_pending_reminders, …",
+            border_style="cyan",
+            expand=False,
+        )
+    )
     console.print()
 
     async with MultiMCPSession() as mcp:
@@ -563,7 +618,9 @@ async def _run_orchestration_demo(api_key: str) -> None:
 
         for t in data_tools:
             desc = t.function.description.removeprefix("[Data] ").split("\n")[0]
-            servers_table.add_row("[green]Data & Analytics[/green]", t.function.name, desc)
+            servers_table.add_row(
+                "[green]Data & Analytics[/green]", t.function.name, desc
+            )
         for t in tools_tools:
             desc = t.function.description.removeprefix("[Tools] ").split("\n")[0]
             servers_table.add_row("[blue]Tools & Storage[/blue]", t.function.name, desc)
@@ -572,14 +629,26 @@ async def _run_orchestration_demo(api_key: str) -> None:
         console.print(f"[dim]Модель агента: {_ORCHESTRATION_DEMO_MODEL}[/dim]\n")
 
         # ── Промпт ──────────────────────────────────────────────────────────
-        console.print(Rule("[bold magenta]Промпт агенту (10 шагов через 2 сервера)[/bold magenta]", style="magenta"))
-        console.print(Panel(
-            _ORCHESTRATION_DEMO_PROMPT,
-            border_style="dim",
-            expand=False,
-        ))
+        console.print(
+            Rule(
+                "[bold magenta]Промпт агенту (10 шагов через 2 сервера)[/bold magenta]",
+                style="magenta",
+            )
+        )
+        console.print(
+            Panel(
+                _ORCHESTRATION_DEMO_PROMPT,
+                border_style="dim",
+                expand=False,
+            )
+        )
         console.print()
-        console.print(Rule("[bold yellow]Orchestration Tool Calling Loop[/bold yellow]", style="yellow"))
+        console.print(
+            Rule(
+                "[bold yellow]Orchestration Tool Calling Loop[/bold yellow]",
+                style="yellow",
+            )
+        )
         console.print()
 
         # Патчим call_tool_sync чтобы выводить маршрут
@@ -599,28 +668,37 @@ async def _run_orchestration_demo(api_key: str) -> None:
         mcp.call_tool = instrumented_call_tool  # type: ignore[method-assign]
 
         with OpenRouterClient(api_key) as client:
-            agent = Agent(client=client, model=_ORCHESTRATION_DEMO_MODEL, mcp_session=mcp)
+            agent = Agent(
+                client=client, model=_ORCHESTRATION_DEMO_MODEL, mcp_session=mcp
+            )
             reply = await agent.run_async(_ORCHESTRATION_DEMO_PROMPT)
 
         # ── Финальный ответ ──────────────────────────────────────────────────
         console.print()
-        console.print(Rule("[bold green]Финальный ответ агента[/bold green]", style="green"))
+        console.print(
+            Rule("[bold green]Финальный ответ агента[/bold green]", style="green")
+        )
         console.print(Panel(reply, border_style="green", expand=False))
 
         # ── Показываем сохранённый файл ───────────────────────────────────
         import os
         from pathlib import Path
+
         report_file = Path(os.getcwd()) / "orchestration_report.md"
         if report_file.exists():
             content = report_file.read_text(encoding="utf-8")
             console.print()
-            console.print(Rule("[bold blue]Сохранённый файл отчёта[/bold blue]", style="blue"))
-            console.print(Panel(
-                content,
-                title=f"[dim]{report_file}[/dim]",
-                border_style="blue",
-                expand=False,
-            ))
+            console.print(
+                Rule("[bold blue]Сохранённый файл отчёта[/bold blue]", style="blue")
+            )
+            console.print(
+                Panel(
+                    content,
+                    title=f"[dim]{report_file}[/dim]",
+                    border_style="blue",
+                    expand=False,
+                )
+            )
 
         # ── Итоговая статистика ──────────────────────────────────────────────
         console.print()

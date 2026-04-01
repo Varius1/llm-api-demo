@@ -115,7 +115,9 @@ class Agent:
         if system_prompt:
             has_system = any(msg.role == "system" for msg in self._raw_history)
             if not has_system:
-                self._raw_history.insert(0, ChatMessage(role="system", content=system_prompt))
+                self._raw_history.insert(
+                    0, ChatMessage(role="system", content=system_prompt)
+                )
                 self._save_state()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -222,7 +224,9 @@ class Agent:
         reply, _ = self.run_with_stats(user_input, transforms=transforms)
         return reply
 
-    async def run_async(self, user_input: str, transforms: list[str] | None = None) -> str:
+    async def run_async(
+        self, user_input: str, transforms: list[str] | None = None
+    ) -> str:
         reply, _ = await self.run_with_stats_async(user_input, transforms=transforms)
         return reply
 
@@ -382,11 +386,13 @@ class Agent:
                 )
 
             # Добавляем assistant-сообщение с tool_calls в временный контекст
-            loop_messages.append(ChatMessage(
-                role="assistant",
-                content=msg.content,
-                tool_calls=msg.tool_calls,
-            ))
+            loop_messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=msg.content,
+                    tool_calls=msg.tool_calls,
+                )
+            )
 
             # Вызываем каждый инструмент через MCP (синхронно, в отдельном потоке)
             assert self._mcp_session is not None
@@ -396,13 +402,17 @@ class Agent:
                 except json.JSONDecodeError:
                     args = {}
                 tool_result = self._mcp_session.call_tool_sync(tc.function.name, args)
-                _console.print(f"  [dim][MCP] ← {tc.function.name}: {tool_result}[/dim]")
-                loop_messages.append(ChatMessage(
-                    role="tool",
-                    content=tool_result,
-                    tool_call_id=tc.id,
-                    name=tc.function.name,
-                ))
+                _console.print(
+                    f"  [dim][MCP] ← {tc.function.name}: {tool_result}[/dim]"
+                )
+                loop_messages.append(
+                    ChatMessage(
+                        role="tool",
+                        content=tool_result,
+                        tool_call_id=tc.id,
+                        name=tc.function.name,
+                    )
+                )
 
         # Если вышли из цикла без финального ответа — последний ответ как есть
         return loop_messages[-1].content or "", last_usage
@@ -467,11 +477,13 @@ class Agent:
                     )
                 )
 
-            loop_messages.append(ChatMessage(
-                role="assistant",
-                content=msg.content,
-                tool_calls=msg.tool_calls,
-            ))
+            loop_messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=msg.content,
+                    tool_calls=msg.tool_calls,
+                )
+            )
 
             assert self._mcp_session is not None
             for tc in msg.tool_calls:
@@ -480,13 +492,17 @@ class Agent:
                 except json.JSONDecodeError:
                     args = {}
                 tool_result = await self._mcp_session.call_tool(tc.function.name, args)
-                _console.print(f"  [dim][MCP] ← {tc.function.name}: {tool_result}[/dim]")
-                loop_messages.append(ChatMessage(
-                    role="tool",
-                    content=tool_result,
-                    tool_call_id=tc.id,
-                    name=tc.function.name,
-                ))
+                _console.print(
+                    f"  [dim][MCP] ← {tc.function.name}: {tool_result}[/dim]"
+                )
+                loop_messages.append(
+                    ChatMessage(
+                        role="tool",
+                        content=tool_result,
+                        tool_call_id=tc.id,
+                        name=tc.function.name,
+                    )
+                )
 
         return loop_messages[-1].content or "", last_usage
 
@@ -521,12 +537,23 @@ class Agent:
     def branch_switch(self, name: str) -> None:
         """Переключиться на сохранённую ветку."""
         if name not in self._branches:
-            raise ValueError(f"Ветка «{name}» не найдена. Доступные: {list(self._branches)}")
+            raise ValueError(
+                f"Ветка «{name}» не найдена. Доступные: {list(self._branches)}"
+            )
         snap = self._branches[name]
-        self._raw_history = _validate_messages(snap.get("history", []))  # type: ignore[arg-type]
-        self._facts = dict(snap.get("facts", {}))  # type: ignore[arg-type]
+        history_data = snap.get("history", [])
+        self._raw_history = _validate_messages(history_data)  # type: ignore[arg-type]
+        facts_data = snap.get("facts", {})
+        if isinstance(facts_data, dict):
+            self._facts = {str(k): str(v) for k, v in facts_data.items()}
+        else:
+            self._facts = {}
         self._summary_text = str(snap.get("summary_text", "") or "")
-        self._summary_source_messages = int(snap.get("summary_source_messages", 0) or 0)
+        summary_src = snap.get("summary_source_messages", 0)
+        if summary_src is not None:
+            self._summary_source_messages = int(summary_src)
+        else:
+            self._summary_source_messages = 0
         self._current_branch = name
         self._save_state()
 
@@ -552,7 +579,9 @@ class Agent:
     # Internal: build messages for request
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _build_messages_for_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
+    def _build_messages_for_request(
+        self,
+    ) -> tuple[list[ChatMessage], dict[str, int | bool]]:
         """Диспетчер по стратегии: вернуть список сообщений для отправки в API."""
         if self._strategy == StrategyType.SLIDING_WINDOW:
             messages, meta = self._build_sliding_window_request()
@@ -590,18 +619,26 @@ class Agent:
 
         return messages, meta
 
-    def _build_sliding_window_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
+    def _build_sliding_window_request(
+        self,
+    ) -> tuple[list[ChatMessage], dict[str, int | bool]]:
         msgs = build_sliding_window(self._raw_history, self._keep_last_n)
-        dropped = max(0, len([m for m in self._raw_history if m.role != "system"]) - self._keep_last_n)
+        dropped = max(
+            0,
+            len([m for m in self._raw_history if m.role != "system"])
+            - self._keep_last_n,
+        )
         return msgs, {
             "used_summary": False,
             "summary_chars": 0,
             "compressed_messages_count": dropped,
         }
 
-    def _build_sticky_facts_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
+    def _build_sticky_facts_request(
+        self,
+    ) -> tuple[list[ChatMessage], dict[str, int | bool]]:
         system_msgs, dialog_msgs = _split_system_and_dialog(self._raw_history)
-        tail = dialog_msgs[-self._keep_last_n:] if self._keep_last_n > 0 else []
+        tail = dialog_msgs[-self._keep_last_n :] if self._keep_last_n > 0 else []
 
         messages: list[ChatMessage] = list(system_msgs)
         facts_block = build_facts_block(self._facts)
@@ -616,10 +653,16 @@ class Agent:
             "compressed_messages_count": dropped,
         }
 
-    def _build_branching_request(self) -> tuple[list[ChatMessage], dict[str, int | bool]]:
+    def _build_branching_request(
+        self,
+    ) -> tuple[list[ChatMessage], dict[str, int | bool]]:
         # В режиме branching используем sliding window по умолчанию.
         msgs = build_sliding_window(self._raw_history, self._keep_last_n)
-        dropped = max(0, len([m for m in self._raw_history if m.role != "system"]) - self._keep_last_n)
+        dropped = max(
+            0,
+            len([m for m in self._raw_history if m.role != "system"])
+            - self._keep_last_n,
+        )
         return msgs, {
             "used_summary": False,
             "summary_chars": 0,
@@ -743,7 +786,9 @@ class Agent:
             compression_enabled=self._strategy == StrategyType.SUMMARY,
             used_summary=bool(compression_meta.get("used_summary", False)),
             summary_chars=int(compression_meta.get("summary_chars", 0)),
-            compressed_messages_count=int(compression_meta.get("compressed_messages_count", 0)),
+            compressed_messages_count=int(
+                compression_meta.get("compressed_messages_count", 0)
+            ),
             strategy=self._strategy.value,
             session_prompt_tokens=self._session_prompt_tokens,
             session_completion_tokens=self._session_completion_tokens,
@@ -777,7 +822,9 @@ class Agent:
 
         self._raw_history = _validate_messages(payload.get("raw_history", []))
         self._summary_text = str(payload.get("summary_text", "") or "")
-        self._summary_source_messages = int(payload.get("summary_source_messages", 0) or 0)
+        self._summary_source_messages = int(
+            payload.get("summary_source_messages", 0) or 0
+        )
 
         raw_facts = payload.get("facts", {})
         if isinstance(raw_facts, dict):
@@ -807,7 +854,10 @@ class Agent:
             )
             self._keep_last_n = max(
                 1,
-                int(compression.get("keep_last_n", self._keep_last_n) or self._keep_last_n),
+                int(
+                    compression.get("keep_last_n", self._keep_last_n)
+                    or self._keep_last_n
+                ),
             )
             self._summarize_every = max(
                 1,
@@ -819,7 +869,9 @@ class Agent:
             self._min_messages_for_summary = max(
                 1,
                 int(
-                    compression.get("min_messages_for_summary", self._min_messages_for_summary)
+                    compression.get(
+                        "min_messages_for_summary", self._min_messages_for_summary
+                    )
                     or self._min_messages_for_summary
                 ),
             )
@@ -854,13 +906,16 @@ class Agent:
         has_system = any(msg.role == "system" for msg in self._raw_history)
         if has_system:
             return
-        self._raw_history.insert(0, ChatMessage(role="system", content=DEFAULT_SYSTEM_PROMPT))
+        self._raw_history.insert(
+            0, ChatMessage(role="system", content=DEFAULT_SYSTEM_PROMPT)
+        )
         self._save_state()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Module-level helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _estimate_text_tokens(text: str) -> int:
     # Грубая эвристика для CLI-демонстрации: ~1 токен на 4 символа.
@@ -923,7 +978,9 @@ def _build_heuristic_summary(messages: list[ChatMessage]) -> str:
         lowered = cleaned.lower()
         snippet = _shrink_snippet(cleaned, max_len=110)
 
-        if project is None and ("проект называется" in lowered or lowered.startswith("проект:")):
+        if project is None and (
+            "проект называется" in lowered or lowered.startswith("проект:")
+        ):
             project = _extract_value(cleaned)
             continue
         if client is None and ("клиент" in lowered and ":" in cleaned):
@@ -970,15 +1027,21 @@ def _build_heuristic_summary(messages: list[ChatMessage]) -> str:
         "",
         "Приоритеты:",
     ]
-    lines.extend(f"- {item}" for item in _deduplicate_keep_last(priorities)[-3:] or ["(нет данных)"])
+    lines.extend(
+        f"- {item}"
+        for item in _deduplicate_keep_last(priorities)[-3:] or ["(нет данных)"]
+    )
     lines.append("")
     lines.append("Ограничения:")
     lines.extend(
-        f"- {item}" for item in _deduplicate_keep_last(constraints)[-3:] or ["(нет данных)"]
+        f"- {item}"
+        for item in _deduplicate_keep_last(constraints)[-3:] or ["(нет данных)"]
     )
     lines.append("")
     lines.append("Риски:")
-    lines.extend(f"- {item}" for item in _deduplicate_keep_last(risks)[-3:] or ["(нет данных)"])
+    lines.extend(
+        f"- {item}" for item in _deduplicate_keep_last(risks)[-3:] or ["(нет данных)"]
+    )
     lines.append("")
     lines.append("Требования/KPI:")
     req_kpi = _deduplicate_keep_last(requirements + kpis)[-4:]
@@ -992,7 +1055,8 @@ def _build_heuristic_summary(messages: list[ChatMessage]) -> str:
         f"Проект={project or 'не указано'}; Клиент={client or 'не указано'}; "
         f"Дедлайн={deadline or 'не указано'}; Бюджет={budget or 'не указано'};",
         f"Команда={team or 'не указано'}; Стек={stack or 'не указано'};",
-        "Ограничения: " + "; ".join(_deduplicate_keep_last(constraints)[-2:] or ["нет данных"]),
+        "Ограничения: "
+        + "; ".join(_deduplicate_keep_last(constraints)[-2:] or ["нет данных"]),
         "Риски: " + "; ".join(_deduplicate_keep_last(risks)[-2:] or ["нет данных"]),
         "Требования: " + "; ".join(req_kpi[-2:] or ["нет данных"]),
     ]
@@ -1035,9 +1099,7 @@ def _extract_value(text: str) -> str:
     return _shrink_snippet(text, max_len=90)
 
 
-def _inject_memory_block(
-    messages: list[ChatMessage], block: str
-) -> list[ChatMessage]:
+def _inject_memory_block(messages: list[ChatMessage], block: str) -> list[ChatMessage]:
     """Вставить блок памяти как system-сообщение после последнего system-сообщения."""
     result: list[ChatMessage] = []
     last_system_idx = -1

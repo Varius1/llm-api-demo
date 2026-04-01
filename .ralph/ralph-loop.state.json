@@ -1,0 +1,13 @@
+{
+  "active": true,
+  "iteration": 1,
+  "minIterations": 1,
+  "maxIterations": 10,
+  "completionPromise": "COMPLETE",
+  "tasksMode": false,
+  "taskPromise": "READY_FOR_NEXT_TASK",
+  "prompt": "Проанализируй все файлы в src/llm_cli/ и добавь type hints ко всем функциям без аннотаций типов. После каждого изменения запускай mypy для проверки. Напиши <promise>COMPLETE</promise> когда mypy не показывает ошибок.",
+  "startedAt": "2026-04-01T07:36:31.227Z",
+  "model": "",
+  "agent": "opencode"
+}

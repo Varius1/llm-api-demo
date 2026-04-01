@@ -1,0 +1,25 @@
+general:
+  debug: false
+  instance_name: "SearXNG"
+
+search:
+  safe_search: 0
+  default_lang: "auto"
+
+server:
+  secret_key: "a3c1d2e5f6g7h8i9j0k1l2m3n4o5p6q7"
+  image_proxy: true
+
+limiter:
+  enabled: false
+
+engines:
+  - name: wikipedia
+    engine: wikipedia
+    disabled: false
+  - name: google
+    engine: google
+    disabled: false
+  - name: duckduckgo
+    engine: duckduckgo
+    disabled: false
