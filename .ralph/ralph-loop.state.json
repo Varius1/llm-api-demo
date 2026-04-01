@@ -2,12 +2,12 @@
   "active": true,
   "iteration": 1,
   "minIterations": 1,
-  "maxIterations": 3,
+  "maxIterations": 0,
   "completionPromise": "COMPLETE",
   "tasksMode": false,
   "taskPromise": "READY_FOR_NEXT_TASK",
-  "prompt": "Создай файл test_ralph2.txt с текстом 'Test 2'. Напиши <promise>DONE</promise> когда готово.",
-  "startedAt": "2026-04-01T07:45:45.662Z",
+  "prompt": "version",
+  "startedAt": "2026-04-01T07:47:42.052Z",
   "model": "",
   "agent": "opencode"
 }
