@@ -924,7 +924,7 @@ def _estimate_text_tokens(text: str) -> int:
 
 def _estimate_messages_tokens(messages: list[ChatMessage]) -> int:
     # Небольшой накладной расход на role/структуру + токены контента.
-    return sum(_estimate_text_tokens(msg.content) + 4 for msg in messages)
+    return sum(_estimate_text_tokens(msg.content or "") + 4 for msg in messages)
 
 
 def _validate_messages(items: list[object]) -> list[ChatMessage]:
