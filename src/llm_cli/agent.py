@@ -551,7 +551,9 @@ class Agent:
         self._summary_text = str(snap.get("summary_text", "") or "")
         summary_src = snap.get("summary_source_messages", 0)
         if summary_src is not None:
-            self._summary_source_messages = int(summary_src)
+            self._summary_source_messages = (
+                int(summary_src) if isinstance(summary_src, int | str | float) else 0
+            )
         else:
             self._summary_source_messages = 0
         self._current_branch = name
@@ -970,6 +972,8 @@ def _build_heuristic_summary(messages: list[ChatMessage]) -> str:
     kpis: list[str] = []
 
     for message in messages:
+        if message.content is None:
+            continue
         cleaned = _normalize_text(message.content)
         if not cleaned:
             continue
