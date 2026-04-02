@@ -226,6 +226,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default="local",
         help="Идентификатор модели для --local-optimize (default: local)",
     )
+    parser.add_argument(
+        "--file-assistant",
+        action="store_true",
+        help=(
+            "Интерактивный ассистент для работы с файлами проекта: "
+            "чтение, поиск по коду, генерация документации, diff и запись файлов"
+        ),
+    )
+    parser.add_argument(
+        "--file-goal",
+        type=str,
+        default=None,
+        metavar="GOAL",
+        help=(
+            "Выполнить одну задачу неинтерактивно (используется с --file-assistant): "
+            "например: --file-goal 'найди все импорты httpx'"
+        ),
+    )
     return parser
 
 
@@ -423,6 +441,33 @@ def main() -> None:
         from .support_assistant import run_support_demo
         cfg = ensure_config()
         run_support_demo(api_key=cfg.api_key, model=cfg.default_model)
+        return
+
+    if args.file_assistant:
+        from .file_assistant import run_file_assistant, run_file_assistant_goal
+        from .models import LOCAL_MODEL_ID
+        cfg = ensure_config()
+        if cfg.use_local:
+            _fa_api_key = "local"
+            _fa_base_url = cfg.local_url
+            _fa_model = LOCAL_MODEL_ID
+        else:
+            _fa_api_key = cfg.api_key
+            _fa_base_url = OPENROUTER_URL
+            _fa_model = cfg.default_model
+        if args.file_goal:
+            run_file_assistant_goal(
+                api_key=_fa_api_key,
+                goal=args.file_goal,
+                model=_fa_model,
+                base_url=_fa_base_url,
+            )
+        else:
+            run_file_assistant(
+                api_key=_fa_api_key,
+                model=_fa_model,
+                base_url=_fa_base_url,
+            )
         return
 
     cfg = ensure_config()

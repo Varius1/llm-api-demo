@@ -724,3 +724,38 @@ def run_orchestration_demo() -> None:
 
     cfg = ensure_config()
     asyncio.run(_run_orchestration_demo(cfg.api_key))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MCPFilesSession — сессия к mcp_server_files (инструменты работы с файлами)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MCPFilesSession(MCPSession):
+    """MCP-сессия, подключённая к mcp_server_files (read/write/grep/diff/etc.).
+
+    Использование:
+        async with MCPFilesSession() as session:
+            tools = session.get_tools_schema()
+            result = await session.call_tool("read_file", {"path": "README.md"})
+    """
+
+    async def __aenter__(self) -> MCPFilesSession:
+        import asyncio as _asyncio
+        from contextlib import AsyncExitStack
+
+        self._loop = _asyncio.get_running_loop()
+
+        server_params = StdioServerParameters(
+            command=self._python,
+            args=["-m", "llm_cli.mcp_server_files"],
+        )
+        self._exit_stack = AsyncExitStack()
+        read, write = await self._exit_stack.enter_async_context(
+            stdio_client(server_params)
+        )
+        self._session = await self._exit_stack.enter_async_context(
+            ClientSession(read, write)
+        )
+        await self._session.initialize()
+        await self._refresh_tools()
+        return self  # type: ignore[return-value]
