@@ -117,6 +117,12 @@ def ensure_config() -> AppConfig:
     if env_key:
         cfg.api_key = env_key
 
+    if os.environ.get("USE_LOCAL", "").strip() == "1":
+        cfg.use_local = True
+        local_url_env = os.environ.get("LOCAL_URL", "").strip()
+        if local_url_env:
+            cfg.local_url = local_url_env
+
     if cfg.api_key or cfg.use_local:
         return cfg
 

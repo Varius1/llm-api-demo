@@ -244,6 +244,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "например: --file-goal 'найди все импорты httpx'"
         ),
     )
+    parser.add_argument(
+        "--daily-digest",
+        action="store_true",
+        help="AI дайджест активности репозитория за последние 24 часа",
+    )
     return parser
 
 
@@ -468,6 +473,23 @@ def main() -> None:
                 model=_fa_model,
                 base_url=_fa_base_url,
             )
+        return
+
+    if args.daily_digest:
+        from pathlib import Path
+        from .daily_digest import run_daily_digest
+        from .models import LOCAL_MODEL_ID as _LOCAL_MODEL_ID
+        cfg = ensure_config()
+        if cfg.use_local:
+            _dd_api_key = "local"
+            _dd_base_url = cfg.local_url
+            _dd_model = _LOCAL_MODEL_ID
+        else:
+            _dd_api_key = cfg.api_key
+            _dd_base_url = OPENROUTER_URL
+            _dd_model = cfg.default_model
+        with OpenRouterClient(_dd_api_key, base_url=_dd_base_url) as client:
+            run_daily_digest(client, _dd_model, repo_path=Path("."))
         return
 
     cfg = ensure_config()
